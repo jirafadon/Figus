@@ -573,125 +573,83 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
 
 <script>
 // ============================================================
-// FIREBASE REST API (sin SDK — máxima compatibilidad)
-// Usa la REST API de Firestore directamente con fetch() nativo
-// No hay CORS, no hay problemas de módulos, funciona en cualquier entorno
+// FIRESTORE REST API — sin SDK, sin autenticación
+// Funciona con rules: allow read, write: if true
 // ============================================================
 const FB_PROJECT = "figuritas-mundial-2026-fcb8b";
 const FB_API_KEY  = "AIzaSyBS7z-G_cMG3IG-iID_KDwJktm_iEB5rqg";
-const FB_BASE     = `https://firestore.googleapis.com/v1/projects/${FB_PROJECT}/databases/(default)/documents`;
+const FS_BASE = `https://firestore.googleapis.com/v1/projects/${FB_PROJECT}/databases/(default)/documents`;
 
-// Token de acceso anónimo (Firebase Auth REST)
-let _fbToken = null;
-let _fbTokenExpiry = 0;
-
-async function getFirebaseToken() {
-  const now = Date.now();
-  if (_fbToken && now < _fbTokenExpiry - 60000) return _fbToken;
-  
-  // Sign in anonymously via Firebase Auth REST API
-  const res = await fetch(
-    `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FB_API_KEY}`,
-    { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({returnSecureToken:true}) }
-  );
-  if (!res.ok) throw new Error('Auth failed: ' + res.status);
-  const data = await res.json();
-  _fbToken = data.idToken;
-  _fbTokenExpiry = now + (parseInt(data.expiresIn) * 1000);
-  console.log('[Firebase] Token anónimo obtenido OK');
-  return _fbToken;
-}
-
-// Convierte objeto JS plano a formato Firestore REST
-function toFirestore(obj) {
-  const fields = {};
+// Convierte objeto JS a formato Firestore fields
+function toFS(obj) {
+  const f = {};
   for (const [k, v] of Object.entries(obj)) {
-    if (v === null || v === undefined) {
-      fields[k] = { nullValue: null };
-    } else if (typeof v === 'boolean') {
-      fields[k] = { booleanValue: v };
-    } else if (typeof v === 'number') {
-      fields[k] = Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
-    } else if (typeof v === 'string') {
-      fields[k] = { stringValue: v };
-    } else if (typeof v === 'object' && !Array.isArray(v)) {
-      fields[k] = { mapValue: { fields: toFirestore(v).fields } };
-    } else {
-      fields[k] = { stringValue: JSON.stringify(v) };
-    }
+    if (typeof v === 'string')        f[k] = { stringValue: v };
+    else if (typeof v === 'number')   f[k] = Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+    else if (typeof v === 'boolean')  f[k] = { booleanValue: v };
+    else if (v === null || v === undefined) f[k] = { nullValue: null };
+    else                              f[k] = { stringValue: JSON.stringify(v) };
   }
-  return { fields };
+  return { fields: f };
 }
 
-// Convierte respuesta Firestore REST a objeto JS plano
-function fromFirestore(fsDoc) {
-  if (!fsDoc || !fsDoc.fields) return {};
+// Convierte respuesta Firestore a objeto JS
+function fromFS(doc) {
+  if (!doc || !doc.fields) return null;
   const out = {};
-  for (const [k, v] of Object.entries(fsDoc.fields)) {
-    if ('stringValue'  in v) out[k] = v.stringValue;
+  for (const [k, v] of Object.entries(doc.fields)) {
+    if      ('stringValue'  in v) out[k] = v.stringValue;
     else if ('integerValue' in v) out[k] = parseInt(v.integerValue);
     else if ('doubleValue'  in v) out[k] = v.doubleValue;
     else if ('booleanValue' in v) out[k] = v.booleanValue;
-    else if ('nullValue'    in v) out[k] = null;
-    else if ('mapValue'     in v) out[k] = fromFirestore(v.mapValue);
-    else out[k] = null;
+    else                           out[k] = null;
   }
   return out;
 }
 
-// GET documento
-async function fsGet(collection, docId) {
-  const token = await getFirebaseToken();
-  const url = `${FB_BASE}/${collection}/${encodeURIComponent(docId)}`;
-  console.log('[Firebase] GET', url);
-  const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
-  if (res.status === 404) return null; // doc no existe
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(`Firestore GET error ${res.status}: ${err?.error?.message || res.statusText}`);
+async function fsGet(col, id) {
+  const url = `${FS_BASE}/${col}/${encodeURIComponent(id)}?key=${FB_API_KEY}`;
+  const r = await fetch(url);
+  if (r.status === 404) return null;
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(`GET ${r.status}: ${e?.error?.message || r.statusText}`);
   }
-  const data = await res.json();
-  return fromFirestore(data);
+  return fromFS(await r.json());
 }
 
-// SET (patch = merge) documento
-async function fsSet(collection, docId, obj) {
-  const token = await getFirebaseToken();
-  const url = `${FB_BASE}/${collection}/${encodeURIComponent(docId)}`;
-  console.log('[Firebase] PATCH', url, 'campos:', Object.keys(obj));
-  const body = toFirestore(obj);
-  const res = await fetch(url, {
+async function fsSet(col, id, data) {
+  const url = `${FS_BASE}/${col}/${encodeURIComponent(id)}?key=${FB_API_KEY}`;
+  const r = await fetch(url, {
     method: 'PATCH',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(toFS(data))
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(`Firestore PATCH error ${res.status}: ${err?.error?.message || res.statusText}`);
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(`SET ${r.status}: ${e?.error?.message || r.statusText}`);
   }
-  return await res.json();
+  return true;
 }
 
-// DELETE documento
-async function fsDelete(collection, docId) {
-  const token = await getFirebaseToken();
-  const url = `${FB_BASE}/${collection}/${encodeURIComponent(docId)}`;
-  const res = await fetch(url, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
-  if (!res.ok && res.status !== 404) {
-    throw new Error(`Firestore DELETE error ${res.status}`);
-  }
+async function fsDelete(col, id) {
+  const url = `${FS_BASE}/${col}/${encodeURIComponent(id)}?key=${FB_API_KEY}`;
+  const r = await fetch(url, { method: 'DELETE' });
+  if (!r.ok && r.status !== 404) throw new Error(`DELETE ${r.status}`);
+  return true;
 }
 
-// LIST documentos de una colección
-async function fsList(collection) {
-  const token = await getFirebaseToken();
-  const url = `${FB_BASE}/${collection}?pageSize=200`;
-  const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
-  if (!res.ok) throw new Error(`Firestore LIST error ${res.status}`);
-  const data = await res.json();
-  return (data.documents || []).map(d => ({
-    id: d.name.split('/').pop(),
-    data: fromFirestore(d)
+async function fsList(col) {
+  const url = `${FS_BASE}/${col}?key=${FB_API_KEY}&pageSize=300`;
+  const r = await fetch(url);
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(`LIST ${r.status}: ${e?.error?.message || r.statusText}`);
+  }
+  const d = await r.json();
+  return (d.documents || []).map(doc => ({
+    id: doc.name.split('/').pop(),
+    data: fromFS(doc)
   }));
 }
 
@@ -746,7 +704,7 @@ const SECTIONS = [
   { id:'POR',   name:'Portugal', flag:'🇵🇹', stickers: range('POR',1,20) },
   { id:'COD',   name:'Congo DR', flag:'🇨🇩', stickers: range('COD',1,20) },
   { id:'COL',   name:'Colombia', flag:'🇨🇴', stickers: range('COL',1,20) },
-  { id:'ENG',   name:'Inglaterra', flag:'🏴󠁧󠁢󠁥󠁮󠁧󠁿', stickers: range('ENG',1,20) },
+  { id:'ENG',   name:'Inglaterra', flag:'🏴󠁧󠁢󠁳󠁣󠁴󠁿', stickers: range('ENG',1,20) },
   { id:'CRO',   name:'Croacia', flag:'🇭🇷', stickers: range('CRO',1,20) },
   { id:'GHA',   name:'Ghana', flag:'🇬🇭', stickers: range('GHA',1,20) },
   { id:'PAN',   name:'Panamá', flag:'🇵🇦', stickers: range('PAN',1,20) },
@@ -782,18 +740,16 @@ async function doLogin() {
   if(!user || !pass) { err.textContent = 'Completá los campos.'; return; }
 
   try {
-    // Admin especial (sin consultar BD)
+    // Admin local (no requiere BD)
     if(user.toLowerCase() === 'gemelos' && pass === 'ReBruno81') {
-        await enterApp({ username:'Gemelos', role:'admin' });
-        return;
+      await enterApp({ username:'Gemelos', role:'admin' });
+      return;
     }
-
-    const userData = await fsGet("users_v2", user.toLowerCase());
-    if(!userData) { err.textContent = 'Usuario no encontrado.'; return; }
-    if(userData.password !== pass) { err.textContent = 'Contraseña incorrecta.'; return; }
-    
-    await enterApp({ username: userData.username, role: userData.role || 'user' });
-  } catch(e) { err.textContent = 'Error de conexión: ' + e.message; console.error('[doLogin]', e); }
+    const data = await fsGet("users_v2", user.toLowerCase());
+    if(!data) { err.textContent = 'Usuario no encontrado.'; return; }
+    if(data.password !== pass) { err.textContent = 'Contraseña incorrecta.'; return; }
+    await enterApp({ username: data.username, role: data.role || 'user' });
+  } catch(e) { err.textContent = 'Error: ' + e.message; console.error('[login]', e); }
 }
 
 async function doRegister() {
@@ -812,18 +768,18 @@ async function doRegister() {
   try {
     const existing = await fsGet("users_v2", user.toLowerCase());
     if(existing) { err.textContent = 'El usuario ya existe.'; return; }
-    
     await fsSet("users_v2", user.toLowerCase(), {
-      username: user, password: pass, role:'user', state: '{}', createdAt: Date.now()
+      username: user, password: pass, role: 'user',
+      state: '{}', createdAt: Date.now()
     });
     if(generated) {
-      info.innerHTML = `✅ ¡Cuenta creada!<br>Contraseña: <strong>${pass}</strong><br>¡Guardala para entrar!`;
+      info.innerHTML = `✅ ¡Cuenta creada!<br>Contraseña: <strong>${pass}</strong><br>¡Guardala!`;
       info.style.display = 'block';
     } else {
-      showToast('✅ ¡Cuenta creada! Entrando...');
+      showToast('✅ Cuenta creada. Entrando...');
       await enterApp({ username: user, role:'user' });
     }
-  } catch(e) { err.textContent = 'Error al registrar: ' + e.message; console.error('[doRegister]', e); }
+  } catch(e) { err.textContent = 'Error: ' + e.message; console.error('[register]', e); }
 }
 
 async function enterApp(user) {
@@ -845,36 +801,31 @@ async function syncManual(silent = false) {
     if(!currentUser) return;
     setSync('syncing', 'Conectando...');
     if(!silent) showToast('Sincronizando...');
-    
     try {
         const docId = currentUser.username.toLowerCase();
-        const userData = await fsGet("users_v2", docId);
-        
-        if(userData) {
-            // El campo state se guarda como JSON string para evitar límites de Firestore
-            const rawState = userData.state || '{}';
-            const cloudState = typeof rawState === 'string' ? JSON.parse(rawState) : rawState;
-            state = cloudState;
+        const data = await fsGet("users_v2", docId);
+        if(data) {
+            const raw = data.state || '{}';
+            state = typeof raw === 'string' ? JSON.parse(raw) : raw;
             localStorage.setItem('album_state', JSON.stringify(state));
             refreshAllStickers();
             updateStats();
-            setSync('ok', 'Sincronizado ✓');
-            if(!silent) showToast('✅ Álbum actualizado desde la nube');
         } else {
-            // Doc no existe → crearlo con estado actual
+            // Primer login: crear documento
             await fsSet("users_v2", docId, {
                 username: currentUser.username,
                 role: currentUser.role || 'user',
                 state: JSON.stringify(state),
                 createdAt: Date.now()
             });
-            setSync('ok', 'Sincronizado ✓');
-            if(!silent) showToast('✅ Álbum listo');
         }
+        setSync('ok', 'Guardado ✓');
+        if(!silent) showToast('✅ Sincronizado');
+        setTimeout(() => { const b = document.getElementById('sync-bar'); if(b) b.style.display='none'; }, 3000);
     } catch(e) {
-        console.error('[syncManual]', e);
+        console.error('[sync]', e);
         setSync('error', 'Sin conexión · local');
-        if(!silent) showToast('❌ Error: ' + e.message);
+        if(!silent) showToast('❌ ' + e.message);
     }
 }
 
@@ -1036,26 +987,20 @@ function applyFilter() {
 let saveTimer = null;
 function saveToCloud() {
   if(!currentUser) return;
-  // Guardar en localStorage inmediatamente
   localStorage.setItem('album_state', JSON.stringify(state));
-  
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     setSync('syncing', 'Guardando...');
     try {
-      const docId = currentUser.username.toLowerCase();
-      await fsSet("users_v2", docId, {
+      await fsSet("users_v2", currentUser.username.toLowerCase(), {
         state: JSON.stringify(state),
         updatedAt: Date.now()
       });
       setSync('ok', 'Guardado ✓');
-      setTimeout(() => {
-        const bar = document.getElementById('sync-bar');
-        if(bar) bar.style.display = 'none';
-      }, 3000);
+      setTimeout(() => { const b = document.getElementById('sync-bar'); if(b) b.style.display='none'; }, 3000);
     } catch(e) {
-      console.error('[saveToCloud]', e);
-      setSync('error', 'Sin conexión · guardado local');
+      console.error('[save]', e);
+      setSync('error', 'Sin conexión · local');
     }
   }, 800);
 }
@@ -1081,32 +1026,27 @@ async function loadAdminPanel() {
   try {
     const docs = await fsList("users_v2");
     tbody.innerHTML = '';
+    if(!docs.length) { tbody.innerHTML = '<tr><td colspan="8">Sin usuarios.</td></tr>'; return; }
     docs.forEach(({ id, data: u }) => {
-      const stRaw = u.state || '{}';
-      const st = typeof stRaw === 'string' ? JSON.parse(stRaw) : stRaw;
+      const raw = u.state || '{}';
+      const st = typeof raw === 'string' ? JSON.parse(raw) : raw;
       const sids = Array.from(ALL_IDS);
-      const h = sids.filter(sid => st[sid]==='have').length;
-      const r = sids.filter(sid => st[sid]==='repeated').length;
-      const m = sids.filter(sid => st[sid]==='missing').length;
+      const h = sids.filter(s => st[s]==='have').length;
+      const r = sids.filter(s => st[s]==='repeated').length;
+      const m = sids.filter(s => st[s]==='missing').length;
       const p = Math.round(((h+r)/TOTAL_STICKERS)*100);
-      
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td><strong>${u.username || id}</strong></td>
+        <td><strong>${u.username||id}</strong></td>
         <td>${u.role||'user'}</td>
         <td style="font-family:monospace">${u.password||'-'}</td>
-        <td>${h+r}</td>
-        <td>${m}</td>
-        <td>${r}</td>
-        <td>${p}%</td>
-        <td><button onclick="adminDelete('${id}')" style="color:var(--red); background:none; border:none; cursor:pointer">Borrar</button></td>
-      `;
+        <td>${h+r}</td><td>${m}</td><td>${r}</td><td>${p}%</td>
+        <td><button onclick="adminDelete('${id}')" style="color:var(--red);background:none;border:none;cursor:pointer">Borrar</button></td>`;
       tbody.appendChild(tr);
     });
-    if(docs.length === 0) tbody.innerHTML = '<tr><td colspan="8">No hay usuarios.</td></tr>';
   } catch(e) { 
-    console.error('[loadAdminPanel]', e);
-    tbody.innerHTML = `<tr><td colspan="8">Error al cargar: ${e.message}</td></tr>`; 
+    console.error('[admin]', e);
+    tbody.innerHTML = `<tr><td colspan="8">Error: ${e.message}</td></tr>`; 
   }
 }
 
@@ -1116,10 +1056,7 @@ async function adminDelete(id) {
     await fsDelete("users_v2", id);
     showToast('✅ Usuario borrado');
     loadAdminPanel();
-  } catch(e) {
-    showToast('❌ Error al borrar: ' + e.message);
-    console.error('[adminDelete]', e);
-  }
+  } catch(e) { showToast('❌ ' + e.message); }
 }
 
 // ============================================================
@@ -1252,12 +1189,12 @@ async function doChangePassword() {
   
   try {
     const docId = currentUser.username.toLowerCase();
-    const userData = await fsGet("users_v2", docId);
-    if(!userData || userData.password !== oldP) { err.textContent = 'Contraseña actual incorrecta.'; return; }
+    const data = await fsGet("users_v2", docId);
+    if(!data || data.password !== oldP) { err.textContent = 'Contraseña actual incorrecta.'; return; }
     await fsSet("users_v2", docId, { password: newP });
     showToast('✅ Contraseña cambiada');
     closeChpwd();
-  } catch(e) { err.textContent = 'Error: ' + e.message; console.error('[doChangePassword]', e); }
+  } catch(e) { err.textContent = 'Error: ' + e.message; }
 }
 
 function showToast(m) {
@@ -1279,11 +1216,7 @@ window.addEventListener('DOMContentLoaded', () => {
       document.getElementById('admin-panel').classList.add('show');
       loadAdminPanel();
     }
-    // Sincronizar en background al cargar
-    syncManual(true).catch(e => {
-      console.error('[init sync]', e);
-      setSync('error', 'Sin conexión · local');
-    });
+    syncManual(true);
   } else {
     document.getElementById('auth-content').innerHTML = `
       <span class="guest-msg">Modo lectura (no guarda cambios)</span>
