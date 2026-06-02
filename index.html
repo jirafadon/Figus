@@ -352,6 +352,57 @@ main { padding: 20px; max-width: 1400px; margin: 0 auto; min-height: 60vh; }
 .admin-table th { text-align: left; padding: 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-family: 'Barlow Condensed', sans-serif; text-transform: uppercase; }
 .admin-table td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.05); }
 
+
+/* ===== EXPORT / SHARE ===== */
+.btn-export {
+  background: linear-gradient(135deg, #16a34a, #15803d);
+  color: #fff;
+  border: none;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  transition: opacity 0.15s;
+}
+.btn-export:hover { opacity: 0.88; }
+
+.export-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 10px;
+}
+.export-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 14px 16px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+.export-option:hover { border-color: var(--accent); }
+.export-option .icon { font-size: 1.8rem; flex-shrink: 0; }
+.export-option .info strong { display: block; font-family: 'Barlow Condensed', sans-serif; font-size: 1rem; font-weight: 700; margin-bottom: 3px; }
+.export-option .info span { font-size: 0.78rem; color: var(--muted); }
+
+#export-progress {
+  text-align: center;
+  padding: 20px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  display: none;
+}
+
 /* ===== UTILS ===== */
 .toast {
   position: fixed;
@@ -395,6 +446,7 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .toolbar { top: 44px; padding: 10px; }
   .btn-scan span { display: none; }
+  .btn-export span { display: none; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(42px, 1fr)); }
 }
 </style>
@@ -507,6 +559,55 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
   </div>
 </div>
 
+
+<!-- EXPORT / SHARE MODAL -->
+<div class="modal-overlay" id="export-modal">
+  <div class="modal" style="max-width:420px">
+    <h2>📤 Exportar / Compartir</h2>
+    <p>Elegí qué querés compartir y el formato.</p>
+
+    <div class="export-modal-body">
+
+      <div class="export-option" onclick="exportPDF('missing')">
+        <span class="icon">📄</span>
+        <div class="info">
+          <strong>PDF — Figuritas que me FALTAN</strong>
+          <span>Lista por selección con banderas. Ideal para imprimir o mostrar.</span>
+        </div>
+      </div>
+
+      <div class="export-option" onclick="exportPDF('repeated')">
+        <span class="icon">📄</span>
+        <div class="info">
+          <strong>PDF — Figuritas REPETIDAS</strong>
+          <span>Las que podés ofrecer para intercambio.</span>
+        </div>
+      </div>
+
+      <div class="export-option" onclick="copyWhatsApp('missing')">
+        <span class="icon">💬</span>
+        <div class="info">
+          <strong>WhatsApp — Me FALTAN</strong>
+          <span>Copia texto listo para pegar en un chat.</span>
+        </div>
+      </div>
+
+      <div class="export-option" onclick="copyWhatsApp('repeated')">
+        <span class="icon">💬</span>
+        <div class="info">
+          <strong>WhatsApp — Tengo REPETIDAS</strong>
+          <span>Ofrecé tus repetidas a tus amigos.</span>
+        </div>
+      </div>
+
+    </div>
+
+    <div id="export-progress">⏳ Generando PDF...</div>
+
+    <button class="btn-cancel" style="width:100%; margin-top:18px" onclick="document.getElementById('export-modal').classList.remove('show')">Cerrar</button>
+  </div>
+</div>
+
 <header>
   <h1>⚽ MUNDIAL 2026</h1>
   <p>Álbum de Figuritas Digital</p>
@@ -532,6 +633,7 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
     <button class="btn-filter" data-filter="missing" onclick="setFilter('missing')">Faltan</button>
     <button class="btn-filter" data-filter="repeated" onclick="setFilter('repeated')">Repes</button>
   </div>
+  <button class="btn-export" onclick="document.getElementById('export-modal').classList.add('show')">📤 <span>Exportar</span></button>
   <button class="btn-scan" onclick="openScan()">📸 <span>Escanear</span></button>
 </div>
 
@@ -1225,6 +1327,219 @@ window.addEventListener('DOMContentLoaded', () => {
     `;
   }
 });
+
+// ============================================================
+// EXPORT / SHARE
+// ============================================================
+
+function buildExportData(filterType) {
+  // Returns array of { section, stickers[] } for the given filter
+  const result = [];
+  SECTIONS.forEach(sec => {
+    const matches = sec.stickers.filter(id => {
+      const v = state[id];
+      if(filterType === 'missing')  return v === 'missing';
+      if(filterType === 'repeated') return v === 'repeated';
+      return false;
+    });
+    if(matches.length > 0) result.push({ sec, stickers: matches });
+  });
+  return result;
+}
+
+// ---- WhatsApp text copy ----
+function copyWhatsApp(filterType) {
+  const data = buildExportData(filterType);
+  if(!data.length) {
+    showToast(filterType === 'missing' ? '✅ ¡No te falta ninguna!' : '✅ No tenés repetidas');
+    return;
+  }
+  const label = filterType === 'missing' ? 'ME FALTAN' : 'TENGO REPETIDAS';
+  const user  = currentUser ? currentUser.username : 'Álbum';
+  let lines = [];
+  lines.push(`⚽ *${user} — ${label}* (Mundial 2026)`);
+  lines.push('');
+  data.forEach(({ sec, stickers }) => {
+    lines.push(`${sec.flag} *${sec.name}* (${stickers.length})`);
+    // Group sticker numbers in rows of 10
+    for(let i = 0; i < stickers.length; i += 10) {
+      lines.push(stickers.slice(i, i+10).map(id => id.replace(sec.id,'')).join(' · '));
+    }
+    lines.push('');
+  });
+  const total = data.reduce((a, d) => a + d.stickers.length, 0);
+  lines.push(`_Total: ${total} figuritas_`);
+
+  const text = lines.join('\n');
+  if(navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('✅ Copiado. Pegalo en WhatsApp 👍');
+      document.getElementById('export-modal').classList.remove('show');
+    }).catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+  document.body.appendChild(ta);
+  ta.focus(); ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+  showToast('✅ Copiado. Pegalo en WhatsApp 👍');
+  document.getElementById('export-modal').classList.remove('show');
+}
+
+// ---- PDF Export ----
+async function exportPDF(filterType) {
+  const data = buildExportData(filterType);
+  if(!data.length) {
+    showToast(filterType === 'missing' ? '✅ ¡No te falta ninguna!' : '✅ No tenés repetidas');
+    return;
+  }
+
+  const prog = document.getElementById('export-progress');
+  prog.style.display = 'block';
+
+  try {
+    // Dynamically load jsPDF from CDN
+    if(!window.jspdf) {
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+    const label    = filterType === 'missing' ? 'FIGURITAS QUE ME FALTAN' : 'FIGURITAS REPETIDAS';
+    const subLabel = filterType === 'missing' ? 'Necesito conseguirlas' : 'Disponibles para intercambio';
+    const user     = currentUser ? currentUser.username : 'Álbum';
+    const total    = data.reduce((a, d) => a + d.stickers.length, 0);
+
+    const PAGE_W = 210, PAGE_H = 297;
+    const ML = 14, MR = 14, MT = 18;
+    const COL_W = (PAGE_W - ML - MR) / 2;
+
+    let x = ML, y = MT;
+    let col = 0; // 0 = left, 1 = right
+    let pageNum = 1;
+
+    function addPage() {
+      drawFooter();
+      doc.addPage();
+      pageNum++;
+      x = ML; y = MT; col = 0;
+      drawHeader();
+    }
+
+    function drawHeader() {
+      // Dark banner
+      doc.setFillColor(10, 14, 26);
+      doc.rect(0, 0, PAGE_W, 14, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.setTextColor(232, 197, 71);
+      doc.text(`⚽  ${user}  —  ${label}`, ML, 9);
+      doc.setFontSize(7);
+      doc.setTextColor(148, 163, 184);
+      doc.text(`${subLabel}  ·  Total: ${total}  ·  Mundial Panini 2026`, ML, 13);
+    }
+
+    function drawFooter() {
+      doc.setFontSize(7);
+      doc.setTextColor(148, 163, 184);
+      doc.text(`Pág. ${pageNum}`, PAGE_W/2, PAGE_H - 5, { align: 'center' });
+    }
+
+    function checkSpace(needed) {
+      if(y + needed > PAGE_H - 12) {
+        if(col === 0) {
+          col = 1; x = ML + COL_W; y = MT + 2;
+        } else {
+          addPage();
+        }
+      }
+    }
+
+    drawHeader();
+    y = 20;
+
+    data.forEach(({ sec, stickers }) => {
+      const rowH = 5;
+      const rows = Math.ceil(stickers.length / 8);
+      const blockH = 8 + rows * rowH + 4;
+
+      checkSpace(blockH);
+
+      const bx = x;
+
+      // Section header background
+      doc.setFillColor(17, 24, 39);
+      doc.roundedRect(bx, y, COL_W - 4, 7, 1.5, 1.5, 'F');
+
+      // Flag as text (emoji rendered as text in PDF — simplified)
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(232, 197, 71);
+      doc.text(sec.flag + '  ' + sec.name.toUpperCase(), bx + 3, y + 4.8);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(148, 163, 184);
+      doc.text(`${stickers.length}`, bx + COL_W - 7, y + 4.8);
+
+      y += 9;
+
+      // Sticker chips in rows of 8
+      const chipW = (COL_W - 4) / 8;
+      stickers.forEach((id, i) => {
+        const cx = bx + (i % 8) * chipW;
+        const cy = y + Math.floor(i / 8) * rowH;
+
+        // Chip background: red for missing, purple for repeated
+        if(filterType === 'missing') doc.setFillColor(239, 68, 68, 0.2);
+        else doc.setFillColor(167, 139, 250, 0.2);
+
+        doc.setDrawColor(filterType === 'missing' ? 239 : 167,
+                         filterType === 'missing' ? 68  : 139,
+                         filterType === 'missing' ? 68  : 250);
+        doc.roundedRect(cx, cy, chipW - 1, rowH - 0.5, 0.8, 0.8, 'FD');
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(5.5);
+        doc.setTextColor(filterType === 'missing' ? 255 : 200,
+                         filterType === 'missing' ? 100 : 150,
+                         filterType === 'missing' ? 100 : 255);
+        // Show just the number part (strip prefix)
+        const num = id.replace(sec.id, '');
+        doc.text(num, cx + chipW/2 - 0.5, cy + rowH - 1.2, { align: 'center' });
+      });
+
+      y += rows * rowH + 5;
+    });
+
+    drawFooter();
+
+    const filename = `figuritas_${filterType === 'missing' ? 'faltan' : 'repetidas'}_${user}.pdf`;
+    doc.save(filename);
+    showToast('✅ PDF generado y descargado');
+    document.getElementById('export-modal').classList.remove('show');
+
+  } catch(e) {
+    console.error('[exportPDF]', e);
+    showToast('❌ Error al generar PDF: ' + e.message);
+  } finally {
+    prog.style.display = 'none';
+  }
+}
+
 </script>
 </body>
 </html>
