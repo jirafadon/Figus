@@ -594,9 +594,9 @@ let db = null;
 
 async function initFirebase() {
   if (db) return;
-  const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
+  const { initializeApp, getApps, getApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
   const { getFirestore } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-  const app = initializeApp(firebaseConfig);
+  const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
   db = getFirestore(app);
 }
 
@@ -731,6 +731,7 @@ async function doRegister() {
       info.innerHTML = `✅ ¡Cuenta creada!<br>Contraseña: <strong>${pass}</strong><br>¡Guardala para entrar!`;
       info.style.display = 'block';
     } else {
+      showToast('✅ ¡Cuenta creada! Entrando...');
       await enterApp({ username: user, role:'user' });
     }
   } catch(e) { err.textContent = 'Error al registrar.'; console.error(e); }
@@ -747,7 +748,7 @@ async function enterApp(user) {
     loadAdminPanel();
   }
 
-  // Cargar datos una sola vez al entrar
+  // Cargar datos desde la nube al ingresar
   await syncManual(true);
 }
 
@@ -758,17 +759,29 @@ async function syncManual(silent = false) {
     
     try {
         await initFirebase();
-        const { doc, getDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        const { doc, getDoc, setDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
         const ref = doc(db, "users_v2", currentUser.username.toLowerCase());
         const snap = await getDoc(ref);
         
         if(snap.exists()) {
-            state = snap.data().state || {};
+            const cloudState = snap.data().state || {};
+            // Merge: cloud wins unless local has newer data (first load: just use cloud)
+            state = cloudState;
             localStorage.setItem('album_state', JSON.stringify(state));
             refreshAllStickers();
             updateStats();
             setSync('ok', 'Sincronizado');
             if(!silent) showToast('✅ Álbum actualizado');
+        } else {
+            // Usuario nuevo o admin sin doc: crear documento con estado actual
+            await setDoc(ref, { 
+                username: currentUser.username, 
+                role: currentUser.role || 'user',
+                state: state || {}, 
+                createdAt: Date.now() 
+            }, { merge: true });
+            setSync('ok', 'Sincronizado');
+            if(!silent) showToast('✅ Álbum listo');
         }
     } catch(e) {
         console.error(e);
@@ -935,6 +948,9 @@ function applyFilter() {
 let saveTimer = null;
 function saveToCloud() {
   if(!currentUser) return;
+  // Save to localStorage immediately (fast, offline-safe)
+  localStorage.setItem('album_state', JSON.stringify(state));
+  
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     setSync('syncing', 'Guardando...');
@@ -946,9 +962,9 @@ function saveToCloud() {
       setSync('ok', 'Sincronizado');
     } catch(e) { 
       console.error("Save error:", e);
-      setSync('error', 'Error de red'); 
+      setSync('error', 'Error de red · cambios guardados localmente'); 
     }
-  }, 1000);
+  }, 800);
 }
 
 function setSync(type, text) {
@@ -1155,7 +1171,13 @@ function showToast(m) {
 window.addEventListener('DOMContentLoaded', () => {
   render();
   if(currentUser) {
-    enterApp(currentUser);
+    // Mostrar UI de usuario inmediatamente, luego sincronizar
+    updateAuthUI();
+    if(currentUser.role === 'admin') {
+      document.getElementById('admin-panel').classList.add('show');
+      loadAdminPanel();
+    }
+    syncManual(true); // Carga datos desde la nube silenciosamente
   } else {
     document.getElementById('auth-content').innerHTML = `
       <span class="guest-msg">Modo lectura (no guarda cambios)</span>
