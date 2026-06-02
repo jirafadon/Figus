@@ -582,7 +582,7 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
 // FIREBASE IMPORTS & CONFIG
 // ============================================================
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getFirestore, collection, doc, getDoc, setDoc, getDocs, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, collection, doc, getDoc, setDoc, getDocs, deleteDoc, onSnapshot, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBS7z-G_cMG3IG-iID_KDwJktm_iEB5rqg",
@@ -595,6 +595,15 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+
+// Habilitar persistencia offline para mejor sincronización
+try {
+    enableIndexedDbPersistence(db).catch((err) => {
+        if (err.code == 'failed-precondition') { console.warn("Múltiples pestañas abiertas, persistencia desactivada."); }
+        else if (err.code == 'unimplemented') { console.warn("El navegador no soporta persistencia."); }
+    });
+} catch(e) {}
+
 const usersColRef = collection(db, "users_v2");
 
 // ============================================================
@@ -686,11 +695,12 @@ window.doLogin = async () => {
   if(!user || !pass) { err.textContent = 'Completá los campos.'; return; }
 
   try {
-    if(user.toLowerCase() === 'gemelos' && pass === 'ReBruno81') {
+    const userKey = user.toLowerCase();
+    if(userKey === 'gemelos' && pass === 'ReBruno81') {
       await enterApp({ username:'Gemelos', role:'admin' });
       return;
     }
-    const ref = doc(db, "users_v2", user.toLowerCase());
+    const ref = doc(db, "users_v2", userKey);
     const snap = await getDoc(ref);
     if(!snap.exists()) { err.textContent = 'Usuario no encontrado.'; return; }
     if(snap.data().password !== pass) { err.textContent = 'Contraseña incorrecta.'; return; }
@@ -706,13 +716,14 @@ window.doRegister = async () => {
   err.textContent = ''; info.style.display = 'none';
 
   if(!user) { err.textContent = 'Ingresá un usuario.'; return; }
-  if(user.toLowerCase() === 'gemelos') { err.textContent = 'Nombre reservado.'; return; }
+  const userKey = user.toLowerCase();
+  if(userKey === 'gemelos') { err.textContent = 'Nombre reservado.'; return; }
 
   const generated = !pass;
   if(!pass) pass = Math.random().toString(36).slice(-8);
 
   try {
-    const ref = doc(db, "users_v2", user.toLowerCase());
+    const ref = doc(db, "users_v2", userKey);
     const snap = await getDoc(ref);
     if(snap.exists()) { err.textContent = 'El usuario ya existe.'; return; }
     await setDoc(ref, { username: user, password: pass, role:'user', state: state || {}, createdAt: Date.now() }, { merge: true });
@@ -736,19 +747,22 @@ async function enterApp(user) {
     loadAdminPanel();
   }
 
-  setSync('syncing', 'Cargando álbum...');
+  setSync('syncing', 'Conectando...');
   try {
-    const ref = doc(db, "users_v2", user.username.toLowerCase());
+    const userKey = user.username.toLowerCase();
+    const ref = doc(db, "users_v2", userKey);
+    
     if (unsubscribe) unsubscribe();
-    unsubscribe = onSnapshot(ref, snap => {
+    unsubscribe = onSnapshot(ref, (snap) => {
       if(snap.exists()) {
-        state = snap.data().state || {};
+        const remoteData = snap.data();
+        state = remoteData.state || {};
         localStorage.setItem('album_state', JSON.stringify(state));
         refreshAllStickers();
         updateStats();
         setSync('ok', 'Sincronizado');
       }
-    }, err => {
+    }, (err) => {
       console.error("Snapshot error:", err);
       setSync('error', 'Error de sincronización');
     });
@@ -921,12 +935,13 @@ function saveToCloud() {
   saveTimer = setTimeout(async () => {
     setSync('syncing', 'Guardando...');
     try {
-      const ref = doc(db, "users_v2", currentUser.username.toLowerCase());
+      const userKey = currentUser.username.toLowerCase();
+      const ref = doc(db, "users_v2", userKey);
       await setDoc(ref, { state, updatedAt: Date.now() }, { merge: true });
-      setSync('ok', 'Guardado');
+      setSync('ok', 'Sincronizado');
     } catch(e) { 
       console.error("Save error:", e);
-      setSync('error', 'Error al guardar'); 
+      setSync('error', 'Error de sincronización'); 
     }
   }, 1000);
 }
@@ -1029,14 +1044,13 @@ Identificá qué espacios tienen figurita PEGADA (con foto) vs VACÍOS (solo rec
 Respondé ÚNICAMENTE con JSON: {"found":["ARG5","MEX12"]}`;
 
   try {
-    // Usamos un proxy CORS o avisamos que puede fallar por seguridad del navegador
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method:'POST',
       headers:{ 
           'Content-Type':'application/json',
           'x-api-key': key,
           'anthropic-version': '2023-06-01',
-          'dangerously-allow-browser': 'true' // Requerido para Anthropic SDK, aquí lo intentamos manual
+          'dangerously-allow-browser': 'true'
       },
       body: JSON.stringify({
         model:'claude-3-sonnet-20240229', max_tokens:1000,
@@ -1109,7 +1123,8 @@ window.doChangePassword = async () => {
   if(newP !== newP2) { err.textContent = 'No coinciden.'; return; }
   
   try {
-    const ref = doc(db, "users_v2", currentUser.username.toLowerCase());
+    const userKey = currentUser.username.toLowerCase();
+    const ref = doc(db, "users_v2", userKey);
     const snap = await getDoc(ref);
     if(snap.data().password !== oldP) { err.textContent = 'Contraseña actual incorrecta.'; return; }
     await setDoc(ref, { password: newP }, { merge: true });
