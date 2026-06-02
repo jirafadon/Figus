@@ -577,13 +577,10 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
   Creada por <strong>Joni C.</strong> &nbsp;·&nbsp; 2026 &nbsp;·&nbsp; Panini World Cup
 </footer>
 
-<script type="module">
+<script>
 // ============================================================
-// FIREBASE IMPORTS & CONFIG
+// FIREBASE CONFIG
 // ============================================================
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getFirestore, collection, doc, getDoc, setDoc, getDocs, deleteDoc, onSnapshot, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-
 const firebaseConfig = {
   apiKey: "AIzaSyBS7z-G_cMG3IG-iID_KDwJktm_iEB5rqg",
   authDomain: "figuritas-mundial-2026-fcb8b.firebaseapp.com",
@@ -593,18 +590,30 @@ const firebaseConfig = {
   appId: "1:737725491128:web:a18d65a23bd3c5bb0d114d"
 };
 
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+let db = null, usersColRef = null;
 
-// Habilitar persistencia offline para mejor sincronización
-try {
-    enableIndexedDbPersistence(db).catch((err) => {
-        if (err.code == 'failed-precondition') { console.warn("Múltiples pestañas abiertas, persistencia desactivada."); }
-        else if (err.code == 'unimplemented') { console.warn("El navegador no soporta persistencia."); }
-    });
-} catch(e) {}
+async function initFirebase() {
+  if (db) return;
+  const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
+  const { getFirestore, collection } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+  const app = initializeApp(firebaseConfig);
+  db = getFirestore(app);
+  usersColRef = collection(db, "users_v2");
+}
 
-const usersColRef = collection(db, "users_v2");
+async function getUserDoc(username) {
+  const { doc, getDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+  const ref = doc(db, "users_v2", username.toLowerCase());
+  const snap = await getDoc(ref);
+  return { ref, snap };
+}
+
+async function setUserDoc(username, data) {
+  const { doc, setDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+  const ref = doc(db, "users_v2", username.toLowerCase());
+  await setDoc(ref, data, { merge: true });
+  return ref;
+}
 
 // ============================================================
 // DATA & STATE
@@ -676,18 +685,18 @@ let scanFoundIds = [];
 // ============================================================
 // AUTH LOGIC
 // ============================================================
-window.openAuth = () => { document.getElementById('auth-overlay').classList.add('show'); };
-window.closeAuth = () => { document.getElementById('auth-overlay').classList.remove('show'); };
-window.setAuthTab = (tab) => {
+function openAuth() { document.getElementById('auth-overlay').classList.add('show'); }
+function closeAuth() { document.getElementById('auth-overlay').classList.remove('show'); }
+function setAuthTab(tab) {
   document.getElementById('tab-login').classList.toggle('active', tab==='login');
   document.getElementById('tab-register').classList.toggle('active', tab==='register');
   document.getElementById('auth-panel-login').style.display = tab==='login' ? 'block' : 'none';
   document.getElementById('auth-panel-register').style.display = tab==='register' ? 'block' : 'none';
   document.getElementById('auth-err').textContent = '';
   document.getElementById('auth-info').style.display = 'none';
-};
+}
 
-window.doLogin = async () => {
+async function doLogin() {
   const user = document.getElementById('li-user').value.trim();
   const pass = document.getElementById('li-pass').value;
   const err  = document.getElementById('auth-err');
@@ -695,20 +704,23 @@ window.doLogin = async () => {
   if(!user || !pass) { err.textContent = 'Completá los campos.'; return; }
 
   try {
-    const userKey = user.toLowerCase();
-    if(userKey === 'gemelos' && pass === 'ReBruno81') {
+    await initFirebase();
+    if(user.toLowerCase() === 'gemelos' && pass === 'ReBruno81') {
+      const { snap } = await getUserDoc('gemelos');
+      if (!snap.exists()) {
+        await setUserDoc('gemelos', { username:'Gemelos', password:'ReBruno81', role:'admin', state: state || {}, createdAt:Date.now() });
+      }
       await enterApp({ username:'Gemelos', role:'admin' });
       return;
     }
-    const ref = doc(db, "users_v2", userKey);
-    const snap = await getDoc(ref);
+    const { snap } = await getUserDoc(user);
     if(!snap.exists()) { err.textContent = 'Usuario no encontrado.'; return; }
     if(snap.data().password !== pass) { err.textContent = 'Contraseña incorrecta.'; return; }
     await enterApp({ username: snap.data().username, role: snap.data().role || 'user' });
   } catch(e) { err.textContent = 'Error de conexión.'; console.error(e); }
-};
+}
 
-window.doRegister = async () => {
+async function doRegister() {
   const user = document.getElementById('re-user').value.trim().replace(/\s+/g,'');
   let pass = document.getElementById('re-pass').value;
   const err = document.getElementById('auth-err');
@@ -716,17 +728,16 @@ window.doRegister = async () => {
   err.textContent = ''; info.style.display = 'none';
 
   if(!user) { err.textContent = 'Ingresá un usuario.'; return; }
-  const userKey = user.toLowerCase();
-  if(userKey === 'gemelos') { err.textContent = 'Nombre reservado.'; return; }
+  if(user.toLowerCase() === 'gemelos') { err.textContent = 'Nombre reservado.'; return; }
 
   const generated = !pass;
   if(!pass) pass = Math.random().toString(36).slice(-8);
 
   try {
-    const ref = doc(db, "users_v2", userKey);
-    const snap = await getDoc(ref);
+    await initFirebase();
+    const { snap } = await getUserDoc(user);
     if(snap.exists()) { err.textContent = 'El usuario ya existe.'; return; }
-    await setDoc(ref, { username: user, password: pass, role:'user', state: state || {}, createdAt: Date.now() }, { merge: true });
+    await setUserDoc(user, { username: user, password: pass, role:'user', state: state || {}, createdAt: Date.now() });
     if(generated) {
       info.innerHTML = `✅ ¡Cuenta creada!<br>Contraseña: <strong>${pass}</strong><br>¡Guardala para entrar!`;
       info.style.display = 'block';
@@ -734,7 +745,7 @@ window.doRegister = async () => {
       await enterApp({ username: user, role:'user' });
     }
   } catch(e) { err.textContent = 'Error al registrar.'; console.error(e); }
-};
+}
 
 async function enterApp(user) {
   currentUser = user;
@@ -749,11 +760,12 @@ async function enterApp(user) {
 
   setSync('syncing', 'Conectando...');
   try {
-    const userKey = user.username.toLowerCase();
-    const ref = doc(db, "users_v2", userKey);
+    await initFirebase();
+    const { doc, onSnapshot } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+    const ref = doc(db, "users_v2", user.username.toLowerCase());
     
     if (unsubscribe) unsubscribe();
-    unsubscribe = onSnapshot(ref, (snap) => {
+    unsubscribe = onSnapshot(ref, snap => {
       if(snap.exists()) {
         const remoteData = snap.data();
         state = remoteData.state || {};
@@ -762,7 +774,7 @@ async function enterApp(user) {
         updateStats();
         setSync('ok', 'Sincronizado');
       }
-    }, (err) => {
+    }, err => {
       console.error("Snapshot error:", err);
       setSync('error', 'Error de sincronización');
     });
@@ -772,7 +784,7 @@ async function enterApp(user) {
   }
 }
 
-window.doLogout = () => {
+function doLogout() {
   if(unsubscribe) unsubscribe();
   currentUser = null;
   state = {};
@@ -784,7 +796,7 @@ window.doLogout = () => {
   updateStats();
   closeUserMenu();
   showToast('Sesión cerrada');
-};
+}
 
 function updateAuthUI() {
   const container = document.getElementById('auth-content');
@@ -897,13 +909,13 @@ function updateStats() {
   if(elTxt) elTxt.textContent = `${pct}% completado · ${totalHave} de ${TOTAL_STICKERS}`;
 }
 
-window.setFilter = (f) => {
+function setFilter(f) {
   activeFilter = f;
   document.querySelectorAll('.btn-filter').forEach(b => b.classList.toggle('active', b.dataset.filter === f));
   applyFilter();
-};
+}
 
-window.applyFilter = () => {
+function applyFilter() {
   const query = document.getElementById('search').value.toUpperCase();
   SECTIONS.forEach(sec => {
     let visibleCount = 0;
@@ -923,7 +935,7 @@ window.applyFilter = () => {
     const secEl = document.querySelector(`.section[data-id="${sec.id}"]`);
     if(secEl) secEl.classList.toggle('hidden', visibleCount === 0);
   });
-};
+}
 
 // ============================================================
 // CLOUD SYNC
@@ -935,9 +947,8 @@ function saveToCloud() {
   saveTimer = setTimeout(async () => {
     setSync('syncing', 'Guardando...');
     try {
-      const userKey = currentUser.username.toLowerCase();
-      const ref = doc(db, "users_v2", userKey);
-      await setDoc(ref, { state, updatedAt: Date.now() }, { merge: true });
+      await initFirebase();
+      await setUserDoc(currentUser.username, { state, updatedAt: Date.now() });
       setSync('ok', 'Sincronizado');
     } catch(e) { 
       console.error("Save error:", e);
@@ -957,11 +968,13 @@ function setSync(type, text) {
 // ============================================================
 // ADMIN PANEL
 // ============================================================
-window.loadAdminPanel = async () => {
+async function loadAdminPanel() {
   const tbody = document.getElementById('admin-tbody');
   if(!tbody) return;
   tbody.innerHTML = '<tr><td colspan="8">Cargando...</td></tr>';
   try {
+    await initFirebase();
+    const { getDocs } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
     const snap = await getDocs(usersColRef);
     tbody.innerHTML = '';
     snap.forEach(doc => {
@@ -987,32 +1000,32 @@ window.loadAdminPanel = async () => {
       tbody.appendChild(tr);
     });
   } catch(e) { tbody.innerHTML = '<tr><td colspan="8">Error al cargar.</td></tr>'; }
-};
+}
 
-window.adminDelete = async (id) => {
+async function adminDelete(id) {
   if(!confirm('¿Borrar usuario?')) return;
-  const userRef = doc(db, "users_v2", id);
-  await deleteDoc(userRef);
+  const { doc, deleteDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+  await deleteDoc(doc(db, "users_v2", id));
   loadAdminPanel();
-};
+}
 
 // ============================================================
 // SCANNER IA
 // ============================================================
-window.openScan = () => { 
+function openScan() { 
     document.getElementById('scan-modal').classList.add('show');
     const savedKey = localStorage.getItem('ia_key');
     if(savedKey) document.getElementById('ia-key').value = savedKey;
-};
-window.closeScan = () => {
+}
+function closeScan() {
   document.getElementById('scan-modal').classList.remove('show');
   document.getElementById('scan-preview').style.display = 'none';
   document.getElementById('scan-result').style.display = 'none';
   document.getElementById('btn-scan-go').disabled = true;
   scanImageData = null;
-};
+}
 
-window.onFileSelect = (e) => {
+function onFileSelect(e) {
   const file = e.target.files[0];
   if(!file) return;
   const reader = new FileReader();
@@ -1024,9 +1037,9 @@ window.onFileSelect = (e) => {
     document.getElementById('btn-scan-go').disabled = false;
   };
   reader.readAsDataURL(file);
-};
+}
 
-window.doScan = async () => {
+async function doScan() {
   const key = document.getElementById('ia-key').value.trim();
   if(!key) { showToast('❌ Ingresá la API KEY'); return; }
   localStorage.setItem('ia_key', key);
@@ -1085,9 +1098,9 @@ Respondé ÚNICAMENTE con JSON: {"found":["ARG5","MEX12"]}`;
     console.error(e);
   }
   btn.disabled = false; btn.textContent = 'Analizar';
-};
+}
 
-window.applyScan = () => {
+function applyScan() {
   let added = 0;
   scanFoundIds.forEach(id => {
     if(!state[id]) { state[id] = 'have'; added++; }
@@ -1098,22 +1111,22 @@ window.applyScan = () => {
   saveToCloud();
   closeScan();
   showToast(`✅ ${added} figuritas añadidas`);
-};
+}
 
 // ============================================================
 // MODALS HELPERS
 // ============================================================
-window.openUserMenu = () => {
+function openUserMenu() {
   document.getElementById('um-title').textContent = '👤 ' + currentUser.username;
   document.getElementById('um-sub').textContent = currentUser.role === 'admin' ? '🛡️ Administrador' : 'Usuario estándar';
   document.getElementById('user-menu-modal').classList.add('show');
-};
-window.closeUserMenu = () => { document.getElementById('user-menu-modal').classList.remove('show'); };
+}
+function closeUserMenu() { document.getElementById('user-menu-modal').classList.remove('show'); }
 
-window.openChpwd = () => { document.getElementById('chpwd-modal').classList.add('show'); };
-window.closeChpwd = () => { document.getElementById('chpwd-modal').classList.remove('show'); };
+function openChpwd() { document.getElementById('chpwd-modal').classList.add('show'); }
+function closeChpwd() { document.getElementById('chpwd-modal').classList.remove('show'); }
 
-window.doChangePassword = async () => {
+async function doChangePassword() {
   const oldP = document.getElementById('cp-old').value;
   const newP = document.getElementById('cp-new').value;
   const newP2 = document.getElementById('cp-new2').value;
@@ -1123,15 +1136,14 @@ window.doChangePassword = async () => {
   if(newP !== newP2) { err.textContent = 'No coinciden.'; return; }
   
   try {
-    const userKey = currentUser.username.toLowerCase();
-    const ref = doc(db, "users_v2", userKey);
-    const snap = await getDoc(ref);
+    await initFirebase();
+    const { snap } = await getUserDoc(currentUser.username);
     if(snap.data().password !== oldP) { err.textContent = 'Contraseña actual incorrecta.'; return; }
-    await setDoc(ref, { password: newP }, { merge: true });
+    await setUserDoc(currentUser.username, { password: newP });
     showToast('✅ Contraseña cambiada');
     closeChpwd();
   } catch(e) { err.textContent = 'Error al guardar.'; }
-};
+}
 
 function showToast(m) {
   const t = document.getElementById('toast');
@@ -1144,11 +1156,13 @@ function showToast(m) {
 // ============================================================
 // INIT
 // ============================================================
-render();
-updateAuthUI();
-if(currentUser) {
-  enterApp(currentUser);
-}
+window.addEventListener('DOMContentLoaded', () => {
+  render();
+  updateAuthUI();
+  if(currentUser) {
+    enterApp(currentUser);
+  }
+});
 </script>
 </body>
 </html>
