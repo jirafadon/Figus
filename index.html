@@ -486,6 +486,13 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
   <div class="modal">
     <h2>📸 Escáner IA</h2>
     <p>Detecta automáticamente las figuritas de una foto.</p>
+    
+    <div id="api-config-area" style="margin-bottom:15px; background:rgba(255,255,255,0.05); padding:10px; border-radius:8px; border:1px solid var(--border)">
+        <label style="font-size:0.7rem; color:var(--muted); display:block; margin-bottom:5px">API KEY (Anthropic/Claude)</label>
+        <input type="password" id="ia-key" placeholder="Pega tu clave aquí..." style="width:100%; background:#0d1526; border:1px solid var(--border); color:#fff; padding:6px 10px; border-radius:6px; font-size:0.8rem">
+        <p style="font-size:0.6rem; color:var(--muted); margin-top:5px">Tu clave se guarda solo en este navegador.</p>
+    </div>
+
     <div style="border:2px dashed var(--border); border-radius:12px; padding:30px; text-align:center; cursor:pointer" onclick="document.getElementById('file-input').click()">
       <div style="font-size:2rem; margin-bottom:10px">🖼️</div>
       <p><strong>Click para subir foto</strong></p>
@@ -561,7 +568,7 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
 
 <div class="sync-bar" id="sync-bar" style="display:none">
   <div class="sync-dot pulse"></div>
-  <span id="sync-txt">Sincronizando...</span>
+  <span id="sync-txt">Conectando...</span>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -570,7 +577,26 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
   Creada por <strong>Joni C.</strong> &nbsp;·&nbsp; 2026 &nbsp;·&nbsp; Panini World Cup
 </footer>
 
-<script>
+<script type="module">
+// ============================================================
+// FIREBASE IMPORTS & CONFIG
+// ============================================================
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, collection, doc, getDoc, setDoc, getDocs, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBS7z-G_cMG3IG-iID_KDwJktm_iEB5rqg",
+  authDomain: "figuritas-mundial-2026-fcb8b.firebaseapp.com",
+  projectId: "figuritas-mundial-2026-fcb8b",
+  storageBucket: "figuritas-mundial-2026-fcb8b.firebasestorage.app",
+  messagingSenderId: "737725491128",
+  appId: "1:737725491128:web:a18d65a23bd3c5bb0d114d"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const usersColRef = collection(db, "users_v2");
+
 // ============================================================
 // DATA & STATE
 // ============================================================
@@ -634,59 +660,25 @@ const TOTAL_STICKERS = ALL_IDS.size;
 let state = JSON.parse(localStorage.getItem('album_state') || '{}');
 let currentUser = JSON.parse(localStorage.getItem('album_user') || 'null');
 let activeFilter = 'all';
-let db = null, usersColRef = null, unsubscribe = null;
+let unsubscribe = null;
 let scanImageData = null;
 let scanFoundIds = [];
 
 // ============================================================
-// FIREBASE
-// ============================================================
-async function initFirebase() {
-  if (db) return;
-  const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
-  const { getFirestore, collection } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-  const firebaseConfig = {
-    apiKey: "AIzaSyBS7z-G_cMG3IG-iID_KDwJktm_iEB5rqg",
-    authDomain: "figuritas-mundial-2026-fcb8b.firebaseapp.com",
-    projectId: "figuritas-mundial-2026-fcb8b",
-    storageBucket: "figuritas-mundial-2026-fcb8b.firebasestorage.app",
-    messagingSenderId: "737725491128",
-    appId: "1:737725491128:web:a18d65a23bd3c5bb0d114d"
-  };
-  const app = initializeApp(firebaseConfig);
-  db = getFirestore(app);
-  usersColRef = collection(db, "users_v2");
-}
-
-async function getUserDoc(username) {
-  const { doc, getDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-  const ref = doc(db, "users_v2", username.toLowerCase());
-  const snap = await getDoc(ref);
-  return { ref, snap };
-}
-
-async function setUserDoc(username, data) {
-  const { doc, setDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-  const ref = doc(db, "users_v2", username.toLowerCase());
-  await setDoc(ref, data, { merge: true });
-  return ref;
-}
-
-// ============================================================
 // AUTH LOGIC
 // ============================================================
-function openAuth() { document.getElementById('auth-overlay').classList.add('show'); }
-function closeAuth() { document.getElementById('auth-overlay').classList.remove('show'); }
-function setAuthTab(tab) {
+window.openAuth = () => { document.getElementById('auth-overlay').classList.add('show'); };
+window.closeAuth = () => { document.getElementById('auth-overlay').classList.remove('show'); };
+window.setAuthTab = (tab) => {
   document.getElementById('tab-login').classList.toggle('active', tab==='login');
   document.getElementById('tab-register').classList.toggle('active', tab==='register');
   document.getElementById('auth-panel-login').style.display = tab==='login' ? 'block' : 'none';
   document.getElementById('auth-panel-register').style.display = tab==='register' ? 'block' : 'none';
   document.getElementById('auth-err').textContent = '';
   document.getElementById('auth-info').style.display = 'none';
-}
+};
 
-async function doLogin() {
+window.doLogin = async () => {
   const user = document.getElementById('li-user').value.trim();
   const pass = document.getElementById('li-pass').value;
   const err  = document.getElementById('auth-err');
@@ -694,19 +686,19 @@ async function doLogin() {
   if(!user || !pass) { err.textContent = 'Completá los campos.'; return; }
 
   try {
-    await initFirebase();
     if(user.toLowerCase() === 'gemelos' && pass === 'ReBruno81') {
       await enterApp({ username:'Gemelos', role:'admin' });
       return;
     }
-    const { snap } = await getUserDoc(user);
+    const ref = doc(db, "users_v2", user.toLowerCase());
+    const snap = await getDoc(ref);
     if(!snap.exists()) { err.textContent = 'Usuario no encontrado.'; return; }
     if(snap.data().password !== pass) { err.textContent = 'Contraseña incorrecta.'; return; }
     await enterApp({ username: snap.data().username, role: snap.data().role || 'user' });
   } catch(e) { err.textContent = 'Error de conexión.'; console.error(e); }
-}
+};
 
-async function doRegister() {
+window.doRegister = async () => {
   const user = document.getElementById('re-user').value.trim().replace(/\s+/g,'');
   let pass = document.getElementById('re-pass').value;
   const err = document.getElementById('auth-err');
@@ -720,18 +712,18 @@ async function doRegister() {
   if(!pass) pass = Math.random().toString(36).slice(-8);
 
   try {
-    await initFirebase();
-    const { snap } = await getUserDoc(user);
+    const ref = doc(db, "users_v2", user.toLowerCase());
+    const snap = await getDoc(ref);
     if(snap.exists()) { err.textContent = 'El usuario ya existe.'; return; }
-    await setUserDoc(user, { username: user, password: pass, role:'user', state: state || {}, createdAt: Date.now() });
+    await setDoc(ref, { username: user, password: pass, role:'user', state: state || {}, createdAt: Date.now() }, { merge: true });
     if(generated) {
       info.innerHTML = `✅ ¡Cuenta creada!<br>Contraseña: <strong>${pass}</strong><br>¡Guardala para entrar!`;
       info.style.display = 'block';
     } else {
       await enterApp({ username: user, role:'user' });
     }
-  } catch(e) { err.textContent = 'Error al registrar.'; }
-}
+  } catch(e) { err.textContent = 'Error al registrar.'; console.error(e); }
+};
 
 async function enterApp(user) {
   currentUser = user;
@@ -746,26 +738,27 @@ async function enterApp(user) {
 
   setSync('syncing', 'Cargando álbum...');
   try {
-    await initFirebase();
-    const { doc, onSnapshot } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
     const ref = doc(db, "users_v2", user.username.toLowerCase());
-    
     if (unsubscribe) unsubscribe();
     unsubscribe = onSnapshot(ref, snap => {
       if(snap.exists()) {
-        const remoteState = snap.data().state || {};
-        // Merge: prefer remote but keep local if newer (simple approach: use remote)
-        state = remoteState;
+        state = snap.data().state || {};
         localStorage.setItem('album_state', JSON.stringify(state));
         refreshAllStickers();
         updateStats();
         setSync('ok', 'Sincronizado');
       }
+    }, err => {
+      console.error("Snapshot error:", err);
+      setSync('error', 'Error de sincronización');
     });
-  } catch(e) { setSync('error', 'Error de red'); }
+  } catch(e) { 
+    console.error("EnterApp error:", e);
+    setSync('error', 'Error de red'); 
+  }
 }
 
-function doLogout() {
+window.doLogout = () => {
   if(unsubscribe) unsubscribe();
   currentUser = null;
   state = {};
@@ -777,7 +770,7 @@ function doLogout() {
   updateStats();
   closeUserMenu();
   showToast('Sesión cerrada');
-}
+};
 
 function updateAuthUI() {
   const container = document.getElementById('auth-content');
@@ -840,7 +833,7 @@ function toggleSticker(id) {
   updateStats();
 
   if(!currentUser) {
-    showToast('⚠️ Cambios locales (iniciá sesión para guardar en la nube)');
+    showToast('⚠️ Cambios locales');
   } else {
     saveToCloud();
   }
@@ -890,13 +883,13 @@ function updateStats() {
   if(elTxt) elTxt.textContent = `${pct}% completado · ${totalHave} de ${TOTAL_STICKERS}`;
 }
 
-function setFilter(f) {
+window.setFilter = (f) => {
   activeFilter = f;
   document.querySelectorAll('.btn-filter').forEach(b => b.classList.toggle('active', b.dataset.filter === f));
   applyFilter();
-}
+};
 
-function applyFilter() {
+window.applyFilter = () => {
   const query = document.getElementById('search').value.toUpperCase();
   SECTIONS.forEach(sec => {
     let visibleCount = 0;
@@ -916,7 +909,7 @@ function applyFilter() {
     const secEl = document.querySelector(`.section[data-id="${sec.id}"]`);
     if(secEl) secEl.classList.toggle('hidden', visibleCount === 0);
   });
-}
+};
 
 // ============================================================
 // CLOUD SYNC
@@ -928,10 +921,13 @@ function saveToCloud() {
   saveTimer = setTimeout(async () => {
     setSync('syncing', 'Guardando...');
     try {
-      await initFirebase();
-      await setUserDoc(currentUser.username, { state, updatedAt: Date.now() });
+      const ref = doc(db, "users_v2", currentUser.username.toLowerCase());
+      await setDoc(ref, { state, updatedAt: Date.now() }, { merge: true });
       setSync('ok', 'Guardado');
-    } catch(e) { setSync('error', 'Error al guardar'); }
+    } catch(e) { 
+      console.error("Save error:", e);
+      setSync('error', 'Error al guardar'); 
+    }
   }, 1000);
 }
 
@@ -946,13 +942,11 @@ function setSync(type, text) {
 // ============================================================
 // ADMIN PANEL
 // ============================================================
-async function loadAdminPanel() {
+window.loadAdminPanel = async () => {
   const tbody = document.getElementById('admin-tbody');
   if(!tbody) return;
   tbody.innerHTML = '<tr><td colspan="8">Cargando...</td></tr>';
   try {
-    await initFirebase();
-    const { getDocs } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
     const snap = await getDocs(usersColRef);
     tbody.innerHTML = '';
     snap.forEach(doc => {
@@ -978,28 +972,32 @@ async function loadAdminPanel() {
       tbody.appendChild(tr);
     });
   } catch(e) { tbody.innerHTML = '<tr><td colspan="8">Error al cargar.</td></tr>'; }
-}
+};
 
-async function adminDelete(id) {
+window.adminDelete = async (id) => {
   if(!confirm('¿Borrar usuario?')) return;
-  const { doc, deleteDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-  await deleteDoc(doc(db, "users_v2", id));
+  const userRef = doc(db, "users_v2", id);
+  await deleteDoc(userRef);
   loadAdminPanel();
-}
+};
 
 // ============================================================
 // SCANNER IA
 // ============================================================
-function openScan() { document.getElementById('scan-modal').classList.add('show'); }
-function closeScan() {
+window.openScan = () => { 
+    document.getElementById('scan-modal').classList.add('show');
+    const savedKey = localStorage.getItem('ia_key');
+    if(savedKey) document.getElementById('ia-key').value = savedKey;
+};
+window.closeScan = () => {
   document.getElementById('scan-modal').classList.remove('show');
   document.getElementById('scan-preview').style.display = 'none';
   document.getElementById('scan-result').style.display = 'none';
   document.getElementById('btn-scan-go').disabled = true;
   scanImageData = null;
-}
+};
 
-function onFileSelect(e) {
+window.onFileSelect = (e) => {
   const file = e.target.files[0];
   if(!file) return;
   const reader = new FileReader();
@@ -1011,9 +1009,13 @@ function onFileSelect(e) {
     document.getElementById('btn-scan-go').disabled = false;
   };
   reader.readAsDataURL(file);
-}
+};
 
-async function doScan() {
+window.doScan = async () => {
+  const key = document.getElementById('ia-key').value.trim();
+  if(!key) { showToast('❌ Ingresá la API KEY'); return; }
+  localStorage.setItem('ia_key', key);
+
   const btn = document.getElementById('btn-scan-go');
   btn.disabled = true; btn.textContent = 'Analizando...';
   
@@ -1027,17 +1029,26 @@ Identificá qué espacios tienen figurita PEGADA (con foto) vs VACÍOS (solo rec
 Respondé ÚNICAMENTE con JSON: {"found":["ARG5","MEX12"]}`;
 
   try {
+    // Usamos un proxy CORS o avisamos que puede fallar por seguridad del navegador
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method:'POST',
-      headers:{ 'Content-Type':'application/json' },
+      headers:{ 
+          'Content-Type':'application/json',
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          'dangerously-allow-browser': 'true' // Requerido para Anthropic SDK, aquí lo intentamos manual
+      },
       body: JSON.stringify({
-        model:'claude-sonnet-4-20250514', max_tokens:1000,
+        model:'claude-3-sonnet-20240229', max_tokens:1000,
         messages:[{ role:'user', content:[
           { type:'image', source:{ type:'base64', media_type:mediaType, data:base64 } },
           { type:'text', text:prompt }
         ]}]
       })
     });
+    
+    if(!res.ok) throw new Error('Error en la API: ' + res.status);
+
     const data = await res.json();
     const text = data.content?.map(c => c.text||'').join('') || '';
     const parsed = JSON.parse(text.match(/\{[\s\S]*\}/)[0]);
@@ -1056,13 +1067,13 @@ Respondé ÚNICAMENTE con JSON: {"found":["ARG5","MEX12"]}`;
     document.getElementById('scan-status-txt').textContent = `${found.length} figuritas detectadas.`;
     document.getElementById('scan-result').style.display = 'block';
   } catch(e) {
-    showToast('❌ Error en el análisis');
+    showToast('❌ Error: ' + e.message);
     console.error(e);
   }
   btn.disabled = false; btn.textContent = 'Analizar';
-}
+};
 
-function applyScan() {
+window.applyScan = () => {
   let added = 0;
   scanFoundIds.forEach(id => {
     if(!state[id]) { state[id] = 'have'; added++; }
@@ -1073,22 +1084,22 @@ function applyScan() {
   saveToCloud();
   closeScan();
   showToast(`✅ ${added} figuritas añadidas`);
-}
+};
 
 // ============================================================
 // MODALS HELPERS
 // ============================================================
-function openUserMenu() {
+window.openUserMenu = () => {
   document.getElementById('um-title').textContent = '👤 ' + currentUser.username;
   document.getElementById('um-sub').textContent = currentUser.role === 'admin' ? '🛡️ Administrador' : 'Usuario estándar';
   document.getElementById('user-menu-modal').classList.add('show');
-}
-function closeUserMenu() { document.getElementById('user-menu-modal').classList.remove('show'); }
+};
+window.closeUserMenu = () => { document.getElementById('user-menu-modal').classList.remove('show'); };
 
-function openChpwd() { document.getElementById('chpwd-modal').classList.add('show'); }
-function closeChpwd() { document.getElementById('chpwd-modal').classList.remove('show'); }
+window.openChpwd = () => { document.getElementById('chpwd-modal').classList.add('show'); };
+window.closeChpwd = () => { document.getElementById('chpwd-modal').classList.remove('show'); };
 
-async function doChangePassword() {
+window.doChangePassword = async () => {
   const oldP = document.getElementById('cp-old').value;
   const newP = document.getElementById('cp-new').value;
   const newP2 = document.getElementById('cp-new2').value;
@@ -1098,13 +1109,14 @@ async function doChangePassword() {
   if(newP !== newP2) { err.textContent = 'No coinciden.'; return; }
   
   try {
-    const { snap } = await getUserDoc(currentUser.username);
+    const ref = doc(db, "users_v2", currentUser.username.toLowerCase());
+    const snap = await getDoc(ref);
     if(snap.data().password !== oldP) { err.textContent = 'Contraseña actual incorrecta.'; return; }
-    await setUserDoc(currentUser.username, { password: newP });
+    await setDoc(ref, { password: newP }, { merge: true });
     showToast('✅ Contraseña cambiada');
     closeChpwd();
   } catch(e) { err.textContent = 'Error al guardar.'; }
-}
+};
 
 function showToast(m) {
   const t = document.getElementById('toast');
@@ -1117,13 +1129,11 @@ function showToast(m) {
 // ============================================================
 // INIT
 // ============================================================
-window.addEventListener('DOMContentLoaded', () => {
-  render();
-  updateAuthUI();
-  if(currentUser) {
-    enterApp(currentUser);
-  }
-});
+render();
+updateAuthUI();
+if(currentUser) {
+  enterApp(currentUser);
+}
 </script>
 </body>
 </html>
