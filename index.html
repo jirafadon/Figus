@@ -486,12 +486,6 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
   <div class="modal">
     <h2>📸 Escáner IA</h2>
     <p>Detecta automáticamente las figuritas de una foto.</p>
-    
-    <div id="api-config-area" style="margin-bottom:15px; background:rgba(255,255,255,0.05); padding:10px; border-radius:8px; border:1px solid var(--border)">
-        <label style="font-size:0.7rem; color:var(--muted); display:block; margin-bottom:5px">API KEY (Anthropic/Claude)</label>
-        <input type="password" id="ia-key" placeholder="Pega tu clave aquí..." style="width:100%; background:#0d1526; border:1px solid var(--border); color:#fff; padding:6px 10px; border-radius:6px; font-size:0.8rem">
-        <p style="font-size:0.6rem; color:var(--muted); margin-top:5px">Tu clave se guarda solo en este navegador.</p>
-    </div>
 
     <div style="border:2px dashed var(--border); border-radius:12px; padding:30px; text-align:center; cursor:pointer" onclick="document.getElementById('file-input').click()">
       <div style="font-size:2rem; margin-bottom:10px">🖼️</div>
@@ -754,8 +748,7 @@ async function enterApp(user) {
 
 async function syncManual(silent = false) {
     if(!currentUser) return;
-    if(!silent) showToast('Sincronizando...');
-    setSync('syncing', 'Conectando...');
+    if(!silent) { showToast('Sincronizando...'); setSync('syncing', 'Conectando...'); }
     
     try {
         await initFirebase();
@@ -765,13 +758,11 @@ async function syncManual(silent = false) {
         
         if(snap.exists()) {
             const cloudState = snap.data().state || {};
-            // Merge: cloud wins unless local has newer data (first load: just use cloud)
             state = cloudState;
             localStorage.setItem('album_state', JSON.stringify(state));
             refreshAllStickers();
             updateStats();
-            setSync('ok', 'Sincronizado');
-            if(!silent) showToast('✅ Álbum actualizado');
+            if(!silent) { setSync('ok', 'Sincronizado'); showToast('✅ Álbum actualizado'); }
         } else {
             // Usuario nuevo o admin sin doc: crear documento con estado actual
             await setDoc(ref, { 
@@ -780,13 +771,11 @@ async function syncManual(silent = false) {
                 state: state || {}, 
                 createdAt: Date.now() 
             }, { merge: true });
-            setSync('ok', 'Sincronizado');
-            if(!silent) showToast('✅ Álbum listo');
+            if(!silent) { setSync('ok', 'Sincronizado'); showToast('✅ Álbum listo'); }
         }
     } catch(e) {
         console.error(e);
-        setSync('error', 'Error de red');
-        if(!silent) showToast('❌ Error al sincronizar');
+        if(!silent) { setSync('error', 'Error de red'); showToast('❌ Error al sincronizar'); }
     }
 }
 
@@ -959,20 +948,28 @@ function saveToCloud() {
       const { doc, setDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
       const ref = doc(db, "users_v2", currentUser.username.toLowerCase());
       await setDoc(ref, { state, updatedAt: Date.now() }, { merge: true });
-      setSync('ok', 'Sincronizado');
+      setSync('ok', 'Guardado');
+      // Auto-ocultar la barra de sync después de 3s cuando todo está bien
+      setTimeout(() => {
+        const bar = document.getElementById('sync-bar');
+        if(bar) bar.style.display = 'none';
+      }, 3000);
     } catch(e) { 
       console.error("Save error:", e);
-      setSync('error', 'Error de red · cambios guardados localmente'); 
+      setSync('error', 'Sin conexión · guardado local'); 
     }
   }, 800);
 }
 
 function setSync(type, text) {
   const bar = document.getElementById('sync-bar');
+  const dot = bar?.querySelector('.sync-dot');
   const txt = document.getElementById('sync-txt');
-  if(bar) bar.style.display = 'flex';
+  if(!bar) return;
+  bar.style.display = 'flex';
   if(txt) txt.textContent = text;
-  if(bar) bar.style.color = type==='error' ? 'var(--red)' : type==='syncing' ? 'var(--accent)' : 'var(--green)';
+  bar.style.color = type==='error' ? 'var(--red)' : type==='syncing' ? 'var(--accent)' : 'var(--green)';
+  if(dot) dot.classList.toggle('pulse', type === 'syncing');
 }
 
 // ============================================================
@@ -1024,8 +1021,6 @@ async function adminDelete(id) {
 // ============================================================
 function openScan() { 
     document.getElementById('scan-modal').classList.add('show');
-    const savedKey = localStorage.getItem('ia_key');
-    if(savedKey) document.getElementById('ia-key').value = savedKey;
 }
 function closeScan() {
   document.getElementById('scan-modal').classList.remove('show');
@@ -1050,9 +1045,7 @@ function onFileSelect(e) {
 }
 
 async function doScan() {
-  const key = document.getElementById('ia-key').value.trim();
-  if(!key) { showToast('❌ Ingresá la API KEY'); return; }
-  localStorage.setItem('ia_key', key);
+  if(!scanImageData) { showToast('❌ Seleccioná una foto primero'); return; }
 
   const btn = document.getElementById('btn-scan-go');
   btn.disabled = true; btn.textContent = 'Analizando...';
@@ -1071,12 +1064,11 @@ Respondé ÚNICAMENTE con JSON: {"found":["ARG5","MEX12"]}`;
       method:'POST',
       headers:{ 
           'Content-Type':'application/json',
-          'x-api-key': key,
           'anthropic-version': '2023-06-01',
-          'dangerously-allow-browser': 'true'
+          'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
-        model:'claude-3-sonnet-20240229', max_tokens:1000,
+        model:'claude-opus-4-6', max_tokens:1000,
         messages:[{ role:'user', content:[
           { type:'image', source:{ type:'base64', media_type:mediaType, data:base64 } },
           { type:'text', text:prompt }
@@ -1084,11 +1076,16 @@ Respondé ÚNICAMENTE con JSON: {"found":["ARG5","MEX12"]}`;
       })
     });
     
-    if(!res.ok) throw new Error('Error en la API: ' + res.status);
+    if(!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error?.message || 'Error en la API: ' + res.status);
+    }
 
     const data = await res.json();
     const text = data.content?.map(c => c.text||'').join('') || '';
-    const parsed = JSON.parse(text.match(/\{[\s\S]*\}/)[0]);
+    const match = text.match(/\{[\s\S]*\}/);
+    if(!match) throw new Error('Respuesta inesperada de la IA');
+    const parsed = JSON.parse(match[0]);
     const found = (parsed.found||[]).filter(id => ALL_IDS.has(id));
     scanFoundIds = found;
     
@@ -1101,7 +1098,9 @@ Respondé ÚNICAMENTE con JSON: {"found":["ARG5","MEX12"]}`;
       container.appendChild(tag);
     });
     
-    document.getElementById('scan-status-txt').textContent = `${found.length} figuritas detectadas.`;
+    document.getElementById('scan-status-txt').textContent = found.length > 0 
+      ? `${found.length} figuritas detectadas.` 
+      : 'No se detectaron figuritas en la imagen.';
     document.getElementById('scan-result').style.display = 'block';
   } catch(e) {
     showToast('❌ Error: ' + e.message);
