@@ -631,8 +631,8 @@ const SECTIONS = [
 const ALL_IDS = new Set(SECTIONS.flatMap(s => s.stickers));
 const TOTAL_STICKERS = ALL_IDS.size;
 
-let state = {};
-let currentUser = null;
+let state = JSON.parse(localStorage.getItem('album_state') || '{}');
+let currentUser = JSON.parse(localStorage.getItem('album_user') || 'null');
 let activeFilter = 'all';
 let db = null, usersColRef = null, unsubscribe = null;
 let scanImageData = null;
@@ -723,7 +723,7 @@ async function doRegister() {
     await initFirebase();
     const { snap } = await getUserDoc(user);
     if(snap.exists()) { err.textContent = 'El usuario ya existe.'; return; }
-    await setUserDoc(user, { username: user, password: pass, role:'user', state:{}, createdAt: Date.now() });
+    await setUserDoc(user, { username: user, password: pass, role:'user', state: state || {}, createdAt: Date.now() });
     if(generated) {
       info.innerHTML = `✅ ¡Cuenta creada!<br>Contraseña: <strong>${pass}</strong><br>¡Guardala para entrar!`;
       info.style.display = 'block';
@@ -735,6 +735,7 @@ async function doRegister() {
 
 async function enterApp(user) {
   currentUser = user;
+  localStorage.setItem('album_user', JSON.stringify(user));
   closeAuth();
   updateAuthUI();
   
@@ -745,11 +746,17 @@ async function enterApp(user) {
 
   setSync('syncing', 'Cargando álbum...');
   try {
+    await initFirebase();
     const { doc, onSnapshot } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
     const ref = doc(db, "users_v2", user.username.toLowerCase());
+    
+    if (unsubscribe) unsubscribe();
     unsubscribe = onSnapshot(ref, snap => {
       if(snap.exists()) {
-        state = snap.data().state || {};
+        const remoteState = snap.data().state || {};
+        // Merge: prefer remote but keep local if newer (simple approach: use remote)
+        state = remoteState;
+        localStorage.setItem('album_state', JSON.stringify(state));
         refreshAllStickers();
         updateStats();
         setSync('ok', 'Sincronizado');
@@ -760,7 +767,10 @@ async function enterApp(user) {
 
 function doLogout() {
   if(unsubscribe) unsubscribe();
-  currentUser = null; state = {};
+  currentUser = null;
+  state = {};
+  localStorage.removeItem('album_user');
+  localStorage.removeItem('album_state');
   updateAuthUI();
   document.getElementById('admin-panel').classList.remove('show');
   refreshAllStickers();
@@ -821,24 +831,19 @@ function render() {
 }
 
 function toggleSticker(id) {
-  if(!currentUser) {
-    showToast('⚠️ Iniciá sesión para guardar cambios');
-    // Preview local
-    const cur = state[id];
-    const next = !cur ? 'have' : cur==='have' ? 'missing' : cur==='missing' ? 'repeated' : null;
-    if(!next) delete state[id]; else state[id] = next;
-    refreshSticker(id);
-    updateStats();
-    return;
-  }
-  
   const cur = state[id];
   const next = !cur ? 'have' : cur==='have' ? 'missing' : cur==='missing' ? 'repeated' : null;
   if(!next) delete state[id]; else state[id] = next;
   
+  localStorage.setItem('album_state', JSON.stringify(state));
   refreshSticker(id);
   updateStats();
-  saveToCloud();
+
+  if(!currentUser) {
+    showToast('⚠️ Cambios locales (iniciá sesión para guardar en la nube)');
+  } else {
+    saveToCloud();
+  }
 }
 
 function refreshSticker(id) {
@@ -870,12 +875,19 @@ function updateStats() {
   const totalHave = have + repe;
   const pct = Math.round((totalHave / TOTAL_STICKERS) * 100);
 
-  document.getElementById('st-total').textContent = TOTAL_STICKERS;
-  document.getElementById('st-have').textContent = totalHave;
-  document.getElementById('st-missing').textContent = miss;
-  document.getElementById('st-repeated').textContent = repe;
-  document.getElementById('progress-bar').style.width = pct + '%';
-  document.getElementById('progress-txt').textContent = `${pct}% completado · ${totalHave} de ${TOTAL_STICKERS}`;
+  const elTotal = document.getElementById('st-total');
+  const elHave = document.getElementById('st-have');
+  const elMiss = document.getElementById('st-missing');
+  const elRepe = document.getElementById('st-repeated');
+  const elBar = document.getElementById('progress-bar');
+  const elTxt = document.getElementById('progress-txt');
+
+  if(elTotal) elTotal.textContent = TOTAL_STICKERS;
+  if(elHave) elHave.textContent = totalHave;
+  if(elMiss) elMiss.textContent = miss;
+  if(elRepe) elRepe.textContent = repe;
+  if(elBar) elBar.style.width = pct + '%';
+  if(elTxt) elTxt.textContent = `${pct}% completado · ${totalHave} de ${TOTAL_STICKERS}`;
 }
 
 function setFilter(f) {
@@ -898,7 +910,7 @@ function applyFilter() {
         || (activeFilter === 'repeated' && val === 'repeated');
       
       const isVisible = matchesSearch && matchesFilter;
-      el.classList.toggle('filtered-out', !isVisible);
+      if(el) el.classList.toggle('filtered-out', !isVisible);
       if(isVisible) visibleCount++;
     });
     const secEl = document.querySelector(`.section[data-id="${sec.id}"]`);
@@ -916,18 +928,19 @@ function saveToCloud() {
   saveTimer = setTimeout(async () => {
     setSync('syncing', 'Guardando...');
     try {
+      await initFirebase();
       await setUserDoc(currentUser.username, { state, updatedAt: Date.now() });
       setSync('ok', 'Guardado');
     } catch(e) { setSync('error', 'Error al guardar'); }
-  }, 1500);
+  }, 1000);
 }
 
 function setSync(type, text) {
   const bar = document.getElementById('sync-bar');
   const txt = document.getElementById('sync-txt');
-  bar.style.display = 'flex';
-  txt.textContent = text;
-  bar.style.color = type==='error' ? 'var(--red)' : type==='syncing' ? 'var(--accent)' : 'var(--green)';
+  if(bar) bar.style.display = 'flex';
+  if(txt) txt.textContent = text;
+  if(bar) bar.style.color = type==='error' ? 'var(--red)' : type==='syncing' ? 'var(--accent)' : 'var(--green)';
 }
 
 // ============================================================
@@ -935,8 +948,10 @@ function setSync(type, text) {
 // ============================================================
 async function loadAdminPanel() {
   const tbody = document.getElementById('admin-tbody');
+  if(!tbody) return;
   tbody.innerHTML = '<tr><td colspan="8">Cargando...</td></tr>';
   try {
+    await initFirebase();
     const { getDocs } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
     const snap = await getDocs(usersColRef);
     tbody.innerHTML = '';
@@ -1052,6 +1067,7 @@ function applyScan() {
   scanFoundIds.forEach(id => {
     if(!state[id]) { state[id] = 'have'; added++; }
   });
+  localStorage.setItem('album_state', JSON.stringify(state));
   refreshAllStickers();
   updateStats();
   saveToCloud();
@@ -1092,13 +1108,22 @@ async function doChangePassword() {
 
 function showToast(m) {
   const t = document.getElementById('toast');
-  t.textContent = m; t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 3000);
+  if(t) {
+    t.textContent = m; t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 3000);
+  }
 }
 
-// Init
-render();
-updateAuthUI();
+// ============================================================
+// INIT
+// ============================================================
+window.addEventListener('DOMContentLoaded', () => {
+  render();
+  updateAuthUI();
+  if(currentUser) {
+    enterApp(currentUser);
+  }
+});
 </script>
 </body>
 </html>
