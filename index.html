@@ -573,49 +573,127 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
 
 <script>
 // ============================================================
-// FIREBASE CONFIG (MANUAL MODE)
+// FIREBASE REST API (sin SDK — máxima compatibilidad)
+// Usa la REST API de Firestore directamente con fetch() nativo
+// No hay CORS, no hay problemas de módulos, funciona en cualquier entorno
 // ============================================================
-const firebaseConfig = {
-  apiKey: "AIzaSyBS7z-G_cMG3IG-iID_KDwJktm_iEB5rqg",
-  authDomain: "figuritas-mundial-2026-fcb8b.firebaseapp.com",
-  projectId: "figuritas-mundial-2026-fcb8b",
-  storageBucket: "figuritas-mundial-2026-fcb8b.firebasestorage.app",
-  messagingSenderId: "737725491128",
-  appId: "1:737725491128:web:a18d65a23bd3c5bb0d114d"
-};
+const FB_PROJECT = "figuritas-mundial-2026-fcb8b";
+const FB_API_KEY  = "AIzaSyBS7z-G_cMG3IG-iID_KDwJktm_iEB5rqg";
+const FB_BASE     = `https://firestore.googleapis.com/v1/projects/${FB_PROJECT}/databases/(default)/documents`;
 
-let db = null;
-let _firestoreFns = null; // cached firestore functions
-let _initPromise = null;  // ensures only one init runs at a time
+// Token de acceso anónimo (Firebase Auth REST)
+let _fbToken = null;
+let _fbTokenExpiry = 0;
 
-async function initFirebase() {
-  if (db && _firestoreFns) return;
-  if (_initPromise) return _initPromise;
-  _initPromise = (async () => {
-    try {
-      const { initializeApp, getApps, getApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
-      const firestoreModule = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-      const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-      db = firestoreModule.getFirestore(app);
-      _firestoreFns = firestoreModule; // cache all firestore exports
-    } catch(e) {
-      _initPromise = null; // allow retry on next call
-      throw e;
+async function getFirebaseToken() {
+  const now = Date.now();
+  if (_fbToken && now < _fbTokenExpiry - 60000) return _fbToken;
+  
+  // Sign in anonymously via Firebase Auth REST API
+  const res = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FB_API_KEY}`,
+    { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({returnSecureToken:true}) }
+  );
+  if (!res.ok) throw new Error('Auth failed: ' + res.status);
+  const data = await res.json();
+  _fbToken = data.idToken;
+  _fbTokenExpiry = now + (parseInt(data.expiresIn) * 1000);
+  console.log('[Firebase] Token anónimo obtenido OK');
+  return _fbToken;
+}
+
+// Convierte objeto JS plano a formato Firestore REST
+function toFirestore(obj) {
+  const fields = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === null || v === undefined) {
+      fields[k] = { nullValue: null };
+    } else if (typeof v === 'boolean') {
+      fields[k] = { booleanValue: v };
+    } else if (typeof v === 'number') {
+      fields[k] = Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+    } else if (typeof v === 'string') {
+      fields[k] = { stringValue: v };
+    } else if (typeof v === 'object' && !Array.isArray(v)) {
+      fields[k] = { mapValue: { fields: toFirestore(v).fields } };
+    } else {
+      fields[k] = { stringValue: JSON.stringify(v) };
     }
-  })();
-  return _initPromise;
+  }
+  return { fields };
 }
 
-// Helper: get a firestore doc reference safely
-async function fsDoc(...args) {
-  await initFirebase();
-  return _firestoreFns.doc(db, ...args);
+// Convierte respuesta Firestore REST a objeto JS plano
+function fromFirestore(fsDoc) {
+  if (!fsDoc || !fsDoc.fields) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(fsDoc.fields)) {
+    if ('stringValue'  in v) out[k] = v.stringValue;
+    else if ('integerValue' in v) out[k] = parseInt(v.integerValue);
+    else if ('doubleValue'  in v) out[k] = v.doubleValue;
+    else if ('booleanValue' in v) out[k] = v.booleanValue;
+    else if ('nullValue'    in v) out[k] = null;
+    else if ('mapValue'     in v) out[k] = fromFirestore(v.mapValue);
+    else out[k] = null;
+  }
+  return out;
 }
-async function fsGetDoc(ref)              { await initFirebase(); return _firestoreFns.getDoc(ref); }
-async function fsSetDoc(ref, data, opts)  { await initFirebase(); return _firestoreFns.setDoc(ref, data, opts); }
-async function fsDeleteDoc(ref)           { await initFirebase(); return _firestoreFns.deleteDoc(ref); }
-async function fsCollection(...args)      { await initFirebase(); return _firestoreFns.collection(db, ...args); }
-async function fsGetDocs(ref)             { await initFirebase(); return _firestoreFns.getDocs(ref); }
+
+// GET documento
+async function fsGet(collection, docId) {
+  const token = await getFirebaseToken();
+  const url = `${FB_BASE}/${collection}/${encodeURIComponent(docId)}`;
+  console.log('[Firebase] GET', url);
+  const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+  if (res.status === 404) return null; // doc no existe
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Firestore GET error ${res.status}: ${err?.error?.message || res.statusText}`);
+  }
+  const data = await res.json();
+  return fromFirestore(data);
+}
+
+// SET (patch = merge) documento
+async function fsSet(collection, docId, obj) {
+  const token = await getFirebaseToken();
+  const url = `${FB_BASE}/${collection}/${encodeURIComponent(docId)}`;
+  console.log('[Firebase] PATCH', url, 'campos:', Object.keys(obj));
+  const body = toFirestore(obj);
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Firestore PATCH error ${res.status}: ${err?.error?.message || res.statusText}`);
+  }
+  return await res.json();
+}
+
+// DELETE documento
+async function fsDelete(collection, docId) {
+  const token = await getFirebaseToken();
+  const url = `${FB_BASE}/${collection}/${encodeURIComponent(docId)}`;
+  const res = await fetch(url, { method: 'DELETE', headers: { 'Authorization': `Bearer ${token}` } });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`Firestore DELETE error ${res.status}`);
+  }
+}
+
+// LIST documentos de una colección
+async function fsList(collection) {
+  const token = await getFirebaseToken();
+  const url = `${FB_BASE}/${collection}?pageSize=200`;
+  const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`Firestore LIST error ${res.status}`);
+  const data = await res.json();
+  return (data.documents || []).map(d => ({
+    id: d.name.split('/').pop(),
+    data: fromFirestore(d)
+  }));
+}
 
 // ============================================================
 // DATA & STATE
@@ -704,23 +782,18 @@ async function doLogin() {
   if(!user || !pass) { err.textContent = 'Completá los campos.'; return; }
 
   try {
-    // Siempre inicializar Firebase primero (incluido admin)
-    await initFirebase();
-
-    // Login especial Admin
+    // Admin especial (sin consultar BD)
     if(user.toLowerCase() === 'gemelos' && pass === 'ReBruno81') {
-        const u = { username:'Gemelos', role:'admin' };
-        await enterApp(u);
+        await enterApp({ username:'Gemelos', role:'admin' });
         return;
     }
 
-    const ref = await fsDoc("users_v2", user.toLowerCase());
-    const snap = await fsGetDoc(ref);
-    if(!snap.exists()) { err.textContent = 'Usuario no encontrado.'; return; }
-    if(snap.data().password !== pass) { err.textContent = 'Contraseña incorrecta.'; return; }
+    const userData = await fsGet("users_v2", user.toLowerCase());
+    if(!userData) { err.textContent = 'Usuario no encontrado.'; return; }
+    if(userData.password !== pass) { err.textContent = 'Contraseña incorrecta.'; return; }
     
-    await enterApp({ username: snap.data().username, role: snap.data().role || 'user' });
-  } catch(e) { err.textContent = 'Error de conexión.'; console.error(e); }
+    await enterApp({ username: userData.username, role: userData.role || 'user' });
+  } catch(e) { err.textContent = 'Error de conexión: ' + e.message; console.error('[doLogin]', e); }
 }
 
 async function doRegister() {
@@ -731,19 +804,18 @@ async function doRegister() {
   err.textContent = ''; info.style.display = 'none';
 
   if(!user) { err.textContent = 'Ingresá un usuario.'; return; }
-  if(user.length < 3) { err.textContent = 'El usuario debe tener al menos 3 caracteres.'; return; }
   if(user.toLowerCase() === 'gemelos') { err.textContent = 'Nombre reservado.'; return; }
 
   const generated = !pass;
   if(!pass) pass = Math.random().toString(36).slice(-8);
 
   try {
-    await initFirebase();
-    const ref = await fsDoc("users_v2", user.toLowerCase());
-    const snap = await fsGetDoc(ref);
-    if(snap.exists()) { err.textContent = 'El usuario ya existe.'; return; }
+    const existing = await fsGet("users_v2", user.toLowerCase());
+    if(existing) { err.textContent = 'El usuario ya existe.'; return; }
     
-    await fsSetDoc(ref, { username: user, password: pass, role:'user', state: {}, createdAt: Date.now() });
+    await fsSet("users_v2", user.toLowerCase(), {
+      username: user, password: pass, role:'user', state: '{}', createdAt: Date.now()
+    });
     if(generated) {
       info.innerHTML = `✅ ¡Cuenta creada!<br>Contraseña: <strong>${pass}</strong><br>¡Guardala para entrar!`;
       info.style.display = 'block';
@@ -751,7 +823,7 @@ async function doRegister() {
       showToast('✅ ¡Cuenta creada! Entrando...');
       await enterApp({ username: user, role:'user' });
     }
-  } catch(e) { err.textContent = 'Error al registrar.'; console.error(e); }
+  } catch(e) { err.textContent = 'Error al registrar: ' + e.message; console.error('[doRegister]', e); }
 }
 
 async function enterApp(user) {
@@ -775,34 +847,34 @@ async function syncManual(silent = false) {
     if(!silent) showToast('Sincronizando...');
     
     try {
-        await initFirebase();
-        const ref = await fsDoc("users_v2", currentUser.username.toLowerCase());
-        const snap = await fsGetDoc(ref);
+        const docId = currentUser.username.toLowerCase();
+        const userData = await fsGet("users_v2", docId);
         
-        if(snap.exists()) {
-            const cloudData = snap.data();
-            const cloudState = cloudData.state || {};
+        if(userData) {
+            // El campo state se guarda como JSON string para evitar límites de Firestore
+            const rawState = userData.state || '{}';
+            const cloudState = typeof rawState === 'string' ? JSON.parse(rawState) : rawState;
             state = cloudState;
             localStorage.setItem('album_state', JSON.stringify(state));
             refreshAllStickers();
             updateStats();
-            setSync('ok', 'Sincronizado');
-            if(!silent) showToast('✅ Álbum actualizado');
+            setSync('ok', 'Sincronizado ✓');
+            if(!silent) showToast('✅ Álbum actualizado desde la nube');
         } else {
-            // Usuario nuevo o admin sin doc: crear documento con estado actual
-            await fsSetDoc(ref, { 
-                username: currentUser.username, 
+            // Doc no existe → crearlo con estado actual
+            await fsSet("users_v2", docId, {
+                username: currentUser.username,
                 role: currentUser.role || 'user',
-                state: state || {}, 
-                createdAt: Date.now() 
-            }, { merge: true });
-            setSync('ok', 'Sincronizado');
+                state: JSON.stringify(state),
+                createdAt: Date.now()
+            });
+            setSync('ok', 'Sincronizado ✓');
             if(!silent) showToast('✅ Álbum listo');
         }
     } catch(e) {
-        console.error("syncManual error:", e);
+        console.error('[syncManual]', e);
         setSync('error', 'Sin conexión · local');
-        if(!silent) showToast('❌ Error al sincronizar');
+        if(!silent) showToast('❌ Error: ' + e.message);
     }
 }
 
@@ -962,29 +1034,27 @@ function applyFilter() {
 // CLOUD SYNC (MANUAL SAVE)
 // ============================================================
 let saveTimer = null;
-let _dbReady = false; // track if we've confirmed Firebase works this session
-
 function saveToCloud() {
   if(!currentUser) return;
-  // Guardar en localStorage inmediatamente (rápido, funciona offline)
+  // Guardar en localStorage inmediatamente
   localStorage.setItem('album_state', JSON.stringify(state));
-
+  
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     setSync('syncing', 'Guardando...');
     try {
-      await initFirebase(); // no-op if already init
-      const ref = await fsDoc("users_v2", currentUser.username.toLowerCase());
-      await fsSetDoc(ref, { state, updatedAt: Date.now() }, { merge: true });
-      _dbReady = true;
+      const docId = currentUser.username.toLowerCase();
+      await fsSet("users_v2", docId, {
+        state: JSON.stringify(state),
+        updatedAt: Date.now()
+      });
       setSync('ok', 'Guardado ✓');
       setTimeout(() => {
         const bar = document.getElementById('sync-bar');
         if(bar) bar.style.display = 'none';
       }, 3000);
     } catch(e) {
-      console.error("Save error:", e);
-      // Datos YA están en localStorage, no se pierden
+      console.error('[saveToCloud]', e);
       setSync('error', 'Sin conexión · guardado local');
     }
   }, 800);
@@ -1009,42 +1079,47 @@ async function loadAdminPanel() {
   if(!tbody) return;
   tbody.innerHTML = '<tr><td colspan="8">Cargando...</td></tr>';
   try {
-    await initFirebase();
-    const col = await fsCollection("users_v2");
-    const snap = await fsGetDocs(col);
+    const docs = await fsList("users_v2");
     tbody.innerHTML = '';
-    snap.forEach(doc => {
-      const u = doc.data();
-      const st = u.state || {};
+    docs.forEach(({ id, data: u }) => {
+      const stRaw = u.state || '{}';
+      const st = typeof stRaw === 'string' ? JSON.parse(stRaw) : stRaw;
       const sids = Array.from(ALL_IDS);
-      const h = sids.filter(id => st[id]==='have').length;
-      const r = sids.filter(id => st[id]==='repeated').length;
-      const m = sids.filter(id => st[id]==='missing').length;
+      const h = sids.filter(sid => st[sid]==='have').length;
+      const r = sids.filter(sid => st[sid]==='repeated').length;
+      const m = sids.filter(sid => st[sid]==='missing').length;
       const p = Math.round(((h+r)/TOTAL_STICKERS)*100);
       
       const tr = document.createElement('tr');
       tr.innerHTML = `
-        <td><strong>${u.username}</strong></td>
+        <td><strong>${u.username || id}</strong></td>
         <td>${u.role||'user'}</td>
-        <td style="font-family:monospace">${u.password}</td>
+        <td style="font-family:monospace">${u.password||'-'}</td>
         <td>${h+r}</td>
         <td>${m}</td>
         <td>${r}</td>
         <td>${p}%</td>
-        <td><button onclick="adminDelete('${doc.id}')" style="color:var(--red); background:none; border:none; cursor:pointer">Borrar</button></td>
+        <td><button onclick="adminDelete('${id}')" style="color:var(--red); background:none; border:none; cursor:pointer">Borrar</button></td>
       `;
       tbody.appendChild(tr);
     });
-  } catch(e) { tbody.innerHTML = '<tr><td colspan="8">Error al cargar.</td></tr>'; }
+    if(docs.length === 0) tbody.innerHTML = '<tr><td colspan="8">No hay usuarios.</td></tr>';
+  } catch(e) { 
+    console.error('[loadAdminPanel]', e);
+    tbody.innerHTML = `<tr><td colspan="8">Error al cargar: ${e.message}</td></tr>`; 
+  }
 }
 
 async function adminDelete(id) {
-  if(!confirm('¿Borrar usuario?')) return;
+  if(!confirm('¿Borrar usuario ' + id + '?')) return;
   try {
-    const ref = await fsDoc("users_v2", id);
-    await fsDeleteDoc(ref);
+    await fsDelete("users_v2", id);
+    showToast('✅ Usuario borrado');
     loadAdminPanel();
-  } catch(e) { showToast('❌ Error al borrar usuario'); console.error(e); }
+  } catch(e) {
+    showToast('❌ Error al borrar: ' + e.message);
+    console.error('[adminDelete]', e);
+  }
 }
 
 // ============================================================
@@ -1176,14 +1251,13 @@ async function doChangePassword() {
   if(newP !== newP2) { err.textContent = 'No coinciden.'; return; }
   
   try {
-    await initFirebase();
-    const ref = await fsDoc("users_v2", currentUser.username.toLowerCase());
-    const snap = await fsGetDoc(ref);
-    if(!snap.exists() || snap.data().password !== oldP) { err.textContent = 'Contraseña actual incorrecta.'; return; }
-    await fsSetDoc(ref, { password: newP }, { merge: true });
+    const docId = currentUser.username.toLowerCase();
+    const userData = await fsGet("users_v2", docId);
+    if(!userData || userData.password !== oldP) { err.textContent = 'Contraseña actual incorrecta.'; return; }
+    await fsSet("users_v2", docId, { password: newP });
     showToast('✅ Contraseña cambiada');
     closeChpwd();
-  } catch(e) { err.textContent = 'Error al guardar.'; console.error(e); }
+  } catch(e) { err.textContent = 'Error: ' + e.message; console.error('[doChangePassword]', e); }
 }
 
 function showToast(m) {
@@ -1205,13 +1279,11 @@ window.addEventListener('DOMContentLoaded', () => {
       document.getElementById('admin-panel').classList.add('show');
       loadAdminPanel();
     }
-    // Inicializar Firebase en background y sincronizar
-    initFirebase()
-      .then(() => syncManual(true))
-      .catch(e => {
-        console.error("Firebase init failed on load:", e);
-        setSync('error', 'Sin conexión · local');
-      });
+    // Sincronizar en background al cargar
+    syncManual(true).catch(e => {
+      console.error('[init sync]', e);
+      setSync('error', 'Sin conexión · local');
+    });
   } else {
     document.getElementById('auth-content').innerHTML = `
       <span class="guest-msg">Modo lectura (no guarda cambios)</span>
