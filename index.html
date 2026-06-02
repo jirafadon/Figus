@@ -404,8 +404,7 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
 <!-- TOP AUTH BAR -->
 <div class="top-auth-bar">
   <div class="auth-content" id="auth-content">
-    <span class="guest-msg">Modo lectura (no guarda cambios)</span>
-    <button class="btn-auth-trigger" onclick="openAuth()">INGRESAR / REGISTRARSE</button>
+    <span class="guest-msg">Cargando...</span>
   </div>
 </div>
 
@@ -452,6 +451,7 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
   <div class="modal" style="max-width:320px">
     <h2 id="um-title">👤 Usuario</h2>
     <p id="um-sub" style="margin-bottom:20px"></p>
+    <button class="btn-primary" style="width:100%; margin-bottom:10px" onclick="syncManual()">🔄 Sincronizar ahora</button>
     <button class="btn-primary" style="width:100%; margin-bottom:10px" onclick="closeUserMenu(); openChpwd()">🔑 Cambiar contraseña</button>
     <button class="btn-cancel" style="width:100%" onclick="doLogout()">🚪 Cerrar sesión</button>
   </div>
@@ -567,8 +567,8 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
 </div>
 
 <div class="sync-bar" id="sync-bar" style="display:none">
-  <div class="sync-dot pulse"></div>
-  <span id="sync-txt">Conectando...</span>
+  <div class="sync-dot"></div>
+  <span id="sync-txt">Sincronizado</span>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -579,7 +579,7 @@ footer { padding: 40px 20px; text-align: center; color: var(--muted); font-size:
 
 <script>
 // ============================================================
-// FIREBASE CONFIG
+// FIREBASE CONFIG (MANUAL MODE)
 // ============================================================
 const firebaseConfig = {
   apiKey: "AIzaSyBS7z-G_cMG3IG-iID_KDwJktm_iEB5rqg",
@@ -590,29 +590,14 @@ const firebaseConfig = {
   appId: "1:737725491128:web:a18d65a23bd3c5bb0d114d"
 };
 
-let db = null, usersColRef = null;
+let db = null;
 
 async function initFirebase() {
   if (db) return;
   const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
-  const { getFirestore, collection } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+  const { getFirestore } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
   const app = initializeApp(firebaseConfig);
   db = getFirestore(app);
-  usersColRef = collection(db, "users_v2");
-}
-
-async function getUserDoc(username) {
-  const { doc, getDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-  const ref = doc(db, "users_v2", username.toLowerCase());
-  const snap = await getDoc(ref);
-  return { ref, snap };
-}
-
-async function setUserDoc(username, data) {
-  const { doc, setDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-  const ref = doc(db, "users_v2", username.toLowerCase());
-  await setDoc(ref, data, { merge: true });
-  return ref;
 }
 
 // ============================================================
@@ -678,12 +663,11 @@ const TOTAL_STICKERS = ALL_IDS.size;
 let state = JSON.parse(localStorage.getItem('album_state') || '{}');
 let currentUser = JSON.parse(localStorage.getItem('album_user') || 'null');
 let activeFilter = 'all';
-let unsubscribe = null;
 let scanImageData = null;
 let scanFoundIds = [];
 
 // ============================================================
-// AUTH LOGIC
+// AUTH LOGIC (STABLE MODE)
 // ============================================================
 function openAuth() { document.getElementById('auth-overlay').classList.add('show'); }
 function closeAuth() { document.getElementById('auth-overlay').classList.remove('show'); }
@@ -693,7 +677,6 @@ function setAuthTab(tab) {
   document.getElementById('auth-panel-login').style.display = tab==='login' ? 'block' : 'none';
   document.getElementById('auth-panel-register').style.display = tab==='register' ? 'block' : 'none';
   document.getElementById('auth-err').textContent = '';
-  document.getElementById('auth-info').style.display = 'none';
 }
 
 async function doLogin() {
@@ -705,17 +688,20 @@ async function doLogin() {
 
   try {
     await initFirebase();
+    const { doc, getDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+    
+    // Login especial Admin
     if(user.toLowerCase() === 'gemelos' && pass === 'ReBruno81') {
-      const { snap } = await getUserDoc('gemelos');
-      if (!snap.exists()) {
-        await setUserDoc('gemelos', { username:'Gemelos', password:'ReBruno81', role:'admin', state: state || {}, createdAt:Date.now() });
-      }
-      await enterApp({ username:'Gemelos', role:'admin' });
-      return;
+        const u = { username:'Gemelos', role:'admin' };
+        await enterApp(u);
+        return;
     }
-    const { snap } = await getUserDoc(user);
+
+    const ref = doc(db, "users_v2", user.toLowerCase());
+    const snap = await getDoc(ref);
     if(!snap.exists()) { err.textContent = 'Usuario no encontrado.'; return; }
     if(snap.data().password !== pass) { err.textContent = 'Contraseña incorrecta.'; return; }
+    
     await enterApp({ username: snap.data().username, role: snap.data().role || 'user' });
   } catch(e) { err.textContent = 'Error de conexión.'; console.error(e); }
 }
@@ -735,9 +721,12 @@ async function doRegister() {
 
   try {
     await initFirebase();
-    const { snap } = await getUserDoc(user);
+    const { doc, getDoc, setDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+    const ref = doc(db, "users_v2", user.toLowerCase());
+    const snap = await getDoc(ref);
     if(snap.exists()) { err.textContent = 'El usuario ya existe.'; return; }
-    await setUserDoc(user, { username: user, password: pass, role:'user', state: state || {}, createdAt: Date.now() });
+    
+    await setDoc(ref, { username: user, password: pass, role:'user', state: state || {}, createdAt: Date.now() });
     if(generated) {
       info.innerHTML = `✅ ¡Cuenta creada!<br>Contraseña: <strong>${pass}</strong><br>¡Guardala para entrar!`;
       info.style.display = 'block';
@@ -758,34 +747,37 @@ async function enterApp(user) {
     loadAdminPanel();
   }
 
-  setSync('syncing', 'Conectando...');
-  try {
-    await initFirebase();
-    const { doc, onSnapshot } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-    const ref = doc(db, "users_v2", user.username.toLowerCase());
+  // Cargar datos una sola vez al entrar
+  await syncManual(true);
+}
+
+async function syncManual(silent = false) {
+    if(!currentUser) return;
+    if(!silent) showToast('Sincronizando...');
+    setSync('syncing', 'Conectando...');
     
-    if (unsubscribe) unsubscribe();
-    unsubscribe = onSnapshot(ref, snap => {
-      if(snap.exists()) {
-        const remoteData = snap.data();
-        state = remoteData.state || {};
-        localStorage.setItem('album_state', JSON.stringify(state));
-        refreshAllStickers();
-        updateStats();
-        setSync('ok', 'Sincronizado');
-      }
-    }, err => {
-      console.error("Snapshot error:", err);
-      setSync('error', 'Error de sincronización');
-    });
-  } catch(e) { 
-    console.error("EnterApp error:", e);
-    setSync('error', 'Error de red'); 
-  }
+    try {
+        await initFirebase();
+        const { doc, getDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+        const ref = doc(db, "users_v2", currentUser.username.toLowerCase());
+        const snap = await getDoc(ref);
+        
+        if(snap.exists()) {
+            state = snap.data().state || {};
+            localStorage.setItem('album_state', JSON.stringify(state));
+            refreshAllStickers();
+            updateStats();
+            setSync('ok', 'Sincronizado');
+            if(!silent) showToast('✅ Álbum actualizado');
+        }
+    } catch(e) {
+        console.error(e);
+        setSync('error', 'Error de red');
+        if(!silent) showToast('❌ Error al sincronizar');
+    }
 }
 
 function doLogout() {
-  if(unsubscribe) unsubscribe();
   currentUser = null;
   state = {};
   localStorage.removeItem('album_user');
@@ -938,7 +930,7 @@ function applyFilter() {
 }
 
 // ============================================================
-// CLOUD SYNC
+// CLOUD SYNC (MANUAL SAVE)
 // ============================================================
 let saveTimer = null;
 function saveToCloud() {
@@ -948,11 +940,13 @@ function saveToCloud() {
     setSync('syncing', 'Guardando...');
     try {
       await initFirebase();
-      await setUserDoc(currentUser.username, { state, updatedAt: Date.now() });
+      const { doc, setDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      const ref = doc(db, "users_v2", currentUser.username.toLowerCase());
+      await setDoc(ref, { state, updatedAt: Date.now() }, { merge: true });
       setSync('ok', 'Sincronizado');
     } catch(e) { 
       console.error("Save error:", e);
-      setSync('error', 'Error de sincronización'); 
+      setSync('error', 'Error de red'); 
     }
   }, 1000);
 }
@@ -974,8 +968,8 @@ async function loadAdminPanel() {
   tbody.innerHTML = '<tr><td colspan="8">Cargando...</td></tr>';
   try {
     await initFirebase();
-    const { getDocs } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-    const snap = await getDocs(usersColRef);
+    const { collection, getDocs } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+    const snap = await getDocs(collection(db, "users_v2"));
     tbody.innerHTML = '';
     snap.forEach(doc => {
       const u = doc.data();
@@ -1137,9 +1131,11 @@ async function doChangePassword() {
   
   try {
     await initFirebase();
-    const { snap } = await getUserDoc(currentUser.username);
+    const { doc, getDoc, setDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+    const ref = doc(db, "users_v2", currentUser.username.toLowerCase());
+    const snap = await getDoc(ref);
     if(snap.data().password !== oldP) { err.textContent = 'Contraseña actual incorrecta.'; return; }
-    await setUserDoc(currentUser.username, { password: newP });
+    await setDoc(ref, { password: newP }, { merge: true });
     showToast('✅ Contraseña cambiada');
     closeChpwd();
   } catch(e) { err.textContent = 'Error al guardar.'; }
@@ -1158,9 +1154,13 @@ function showToast(m) {
 // ============================================================
 window.addEventListener('DOMContentLoaded', () => {
   render();
-  updateAuthUI();
   if(currentUser) {
     enterApp(currentUser);
+  } else {
+    document.getElementById('auth-content').innerHTML = `
+      <span class="guest-msg">Modo lectura (no guarda cambios)</span>
+      <button class="btn-auth-trigger" onclick="openAuth()">INGRESAR / REGISTRARSE</button>
+    `;
   }
 });
 </script>
