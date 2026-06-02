@@ -585,14 +585,37 @@ const firebaseConfig = {
 };
 
 let db = null;
+let _firestoreFns = null; // cached firestore functions
+let _initPromise = null;  // ensures only one init runs at a time
 
 async function initFirebase() {
-  if (db) return;
-  const { initializeApp, getApps, getApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
-  const { getFirestore } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-  const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-  db = getFirestore(app);
+  if (db && _firestoreFns) return;
+  if (_initPromise) return _initPromise;
+  _initPromise = (async () => {
+    try {
+      const { initializeApp, getApps, getApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
+      const firestoreModule = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+      const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+      db = firestoreModule.getFirestore(app);
+      _firestoreFns = firestoreModule; // cache all firestore exports
+    } catch(e) {
+      _initPromise = null; // allow retry on next call
+      throw e;
+    }
+  })();
+  return _initPromise;
 }
+
+// Helper: get a firestore doc reference safely
+async function fsDoc(...args) {
+  await initFirebase();
+  return _firestoreFns.doc(db, ...args);
+}
+async function fsGetDoc(ref)              { await initFirebase(); return _firestoreFns.getDoc(ref); }
+async function fsSetDoc(ref, data, opts)  { await initFirebase(); return _firestoreFns.setDoc(ref, data, opts); }
+async function fsDeleteDoc(ref)           { await initFirebase(); return _firestoreFns.deleteDoc(ref); }
+async function fsCollection(...args)      { await initFirebase(); return _firestoreFns.collection(db, ...args); }
+async function fsGetDocs(ref)             { await initFirebase(); return _firestoreFns.getDocs(ref); }
 
 // ============================================================
 // DATA & STATE
@@ -645,7 +668,7 @@ const SECTIONS = [
   { id:'POR',   name:'Portugal', flag:'🇵🇹', stickers: range('POR',1,20) },
   { id:'COD',   name:'Congo DR', flag:'🇨🇩', stickers: range('COD',1,20) },
   { id:'COL',   name:'Colombia', flag:'🇨🇴', stickers: range('COL',1,20) },
-  { id:'ENG',   name:'Inglaterra', flag:'🏴󠁧󠁢󠁳󠁣󠁴󠁿', stickers: range('ENG',1,20) },
+  { id:'ENG',   name:'Inglaterra', flag:'🏴󠁧󠁢󠁥󠁮󠁧󠁿', stickers: range('ENG',1,20) },
   { id:'CRO',   name:'Croacia', flag:'🇭🇷', stickers: range('CRO',1,20) },
   { id:'GHA',   name:'Ghana', flag:'🇬🇭', stickers: range('GHA',1,20) },
   { id:'PAN',   name:'Panamá', flag:'🇵🇦', stickers: range('PAN',1,20) },
@@ -681,9 +704,9 @@ async function doLogin() {
   if(!user || !pass) { err.textContent = 'Completá los campos.'; return; }
 
   try {
+    // Siempre inicializar Firebase primero (incluido admin)
     await initFirebase();
-    const { doc, getDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-    
+
     // Login especial Admin
     if(user.toLowerCase() === 'gemelos' && pass === 'ReBruno81') {
         const u = { username:'Gemelos', role:'admin' };
@@ -691,8 +714,8 @@ async function doLogin() {
         return;
     }
 
-    const ref = doc(db, "users_v2", user.toLowerCase());
-    const snap = await getDoc(ref);
+    const ref = await fsDoc("users_v2", user.toLowerCase());
+    const snap = await fsGetDoc(ref);
     if(!snap.exists()) { err.textContent = 'Usuario no encontrado.'; return; }
     if(snap.data().password !== pass) { err.textContent = 'Contraseña incorrecta.'; return; }
     
@@ -708,6 +731,7 @@ async function doRegister() {
   err.textContent = ''; info.style.display = 'none';
 
   if(!user) { err.textContent = 'Ingresá un usuario.'; return; }
+  if(user.length < 3) { err.textContent = 'El usuario debe tener al menos 3 caracteres.'; return; }
   if(user.toLowerCase() === 'gemelos') { err.textContent = 'Nombre reservado.'; return; }
 
   const generated = !pass;
@@ -715,12 +739,11 @@ async function doRegister() {
 
   try {
     await initFirebase();
-    const { doc, getDoc, setDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-    const ref = doc(db, "users_v2", user.toLowerCase());
-    const snap = await getDoc(ref);
+    const ref = await fsDoc("users_v2", user.toLowerCase());
+    const snap = await fsGetDoc(ref);
     if(snap.exists()) { err.textContent = 'El usuario ya existe.'; return; }
     
-    await setDoc(ref, { username: user, password: pass, role:'user', state: state || {}, createdAt: Date.now() });
+    await fsSetDoc(ref, { username: user, password: pass, role:'user', state: {}, createdAt: Date.now() });
     if(generated) {
       info.innerHTML = `✅ ¡Cuenta creada!<br>Contraseña: <strong>${pass}</strong><br>¡Guardala para entrar!`;
       info.style.display = 'block';
@@ -748,34 +771,38 @@ async function enterApp(user) {
 
 async function syncManual(silent = false) {
     if(!currentUser) return;
-    if(!silent) { showToast('Sincronizando...'); setSync('syncing', 'Conectando...'); }
+    setSync('syncing', 'Conectando...');
+    if(!silent) showToast('Sincronizando...');
     
     try {
         await initFirebase();
-        const { doc, getDoc, setDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-        const ref = doc(db, "users_v2", currentUser.username.toLowerCase());
-        const snap = await getDoc(ref);
+        const ref = await fsDoc("users_v2", currentUser.username.toLowerCase());
+        const snap = await fsGetDoc(ref);
         
         if(snap.exists()) {
-            const cloudState = snap.data().state || {};
+            const cloudData = snap.data();
+            const cloudState = cloudData.state || {};
             state = cloudState;
             localStorage.setItem('album_state', JSON.stringify(state));
             refreshAllStickers();
             updateStats();
-            if(!silent) { setSync('ok', 'Sincronizado'); showToast('✅ Álbum actualizado'); }
+            setSync('ok', 'Sincronizado');
+            if(!silent) showToast('✅ Álbum actualizado');
         } else {
             // Usuario nuevo o admin sin doc: crear documento con estado actual
-            await setDoc(ref, { 
+            await fsSetDoc(ref, { 
                 username: currentUser.username, 
                 role: currentUser.role || 'user',
                 state: state || {}, 
                 createdAt: Date.now() 
             }, { merge: true });
-            if(!silent) { setSync('ok', 'Sincronizado'); showToast('✅ Álbum listo'); }
+            setSync('ok', 'Sincronizado');
+            if(!silent) showToast('✅ Álbum listo');
         }
     } catch(e) {
-        console.error(e);
-        if(!silent) { setSync('error', 'Error de red'); showToast('❌ Error al sincronizar'); }
+        console.error("syncManual error:", e);
+        setSync('error', 'Sin conexión · local');
+        if(!silent) showToast('❌ Error al sincronizar');
     }
 }
 
@@ -935,28 +962,30 @@ function applyFilter() {
 // CLOUD SYNC (MANUAL SAVE)
 // ============================================================
 let saveTimer = null;
+let _dbReady = false; // track if we've confirmed Firebase works this session
+
 function saveToCloud() {
   if(!currentUser) return;
-  // Save to localStorage immediately (fast, offline-safe)
+  // Guardar en localStorage inmediatamente (rápido, funciona offline)
   localStorage.setItem('album_state', JSON.stringify(state));
-  
+
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     setSync('syncing', 'Guardando...');
     try {
-      await initFirebase();
-      const { doc, setDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-      const ref = doc(db, "users_v2", currentUser.username.toLowerCase());
-      await setDoc(ref, { state, updatedAt: Date.now() }, { merge: true });
-      setSync('ok', 'Guardado');
-      // Auto-ocultar la barra de sync después de 3s cuando todo está bien
+      await initFirebase(); // no-op if already init
+      const ref = await fsDoc("users_v2", currentUser.username.toLowerCase());
+      await fsSetDoc(ref, { state, updatedAt: Date.now() }, { merge: true });
+      _dbReady = true;
+      setSync('ok', 'Guardado ✓');
       setTimeout(() => {
         const bar = document.getElementById('sync-bar');
         if(bar) bar.style.display = 'none';
       }, 3000);
-    } catch(e) { 
+    } catch(e) {
       console.error("Save error:", e);
-      setSync('error', 'Sin conexión · guardado local'); 
+      // Datos YA están en localStorage, no se pierden
+      setSync('error', 'Sin conexión · guardado local');
     }
   }, 800);
 }
@@ -981,8 +1010,8 @@ async function loadAdminPanel() {
   tbody.innerHTML = '<tr><td colspan="8">Cargando...</td></tr>';
   try {
     await initFirebase();
-    const { collection, getDocs } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-    const snap = await getDocs(collection(db, "users_v2"));
+    const col = await fsCollection("users_v2");
+    const snap = await fsGetDocs(col);
     tbody.innerHTML = '';
     snap.forEach(doc => {
       const u = doc.data();
@@ -1011,9 +1040,11 @@ async function loadAdminPanel() {
 
 async function adminDelete(id) {
   if(!confirm('¿Borrar usuario?')) return;
-  const { doc, deleteDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-  await deleteDoc(doc(db, "users_v2", id));
-  loadAdminPanel();
+  try {
+    const ref = await fsDoc("users_v2", id);
+    await fsDeleteDoc(ref);
+    loadAdminPanel();
+  } catch(e) { showToast('❌ Error al borrar usuario'); console.error(e); }
 }
 
 // ============================================================
@@ -1146,14 +1177,13 @@ async function doChangePassword() {
   
   try {
     await initFirebase();
-    const { doc, getDoc, setDoc } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
-    const ref = doc(db, "users_v2", currentUser.username.toLowerCase());
-    const snap = await getDoc(ref);
-    if(snap.data().password !== oldP) { err.textContent = 'Contraseña actual incorrecta.'; return; }
-    await setDoc(ref, { password: newP }, { merge: true });
+    const ref = await fsDoc("users_v2", currentUser.username.toLowerCase());
+    const snap = await fsGetDoc(ref);
+    if(!snap.exists() || snap.data().password !== oldP) { err.textContent = 'Contraseña actual incorrecta.'; return; }
+    await fsSetDoc(ref, { password: newP }, { merge: true });
     showToast('✅ Contraseña cambiada');
     closeChpwd();
-  } catch(e) { err.textContent = 'Error al guardar.'; }
+  } catch(e) { err.textContent = 'Error al guardar.'; console.error(e); }
 }
 
 function showToast(m) {
@@ -1170,13 +1200,18 @@ function showToast(m) {
 window.addEventListener('DOMContentLoaded', () => {
   render();
   if(currentUser) {
-    // Mostrar UI de usuario inmediatamente, luego sincronizar
     updateAuthUI();
     if(currentUser.role === 'admin') {
       document.getElementById('admin-panel').classList.add('show');
       loadAdminPanel();
     }
-    syncManual(true); // Carga datos desde la nube silenciosamente
+    // Inicializar Firebase en background y sincronizar
+    initFirebase()
+      .then(() => syncManual(true))
+      .catch(e => {
+        console.error("Firebase init failed on load:", e);
+        setSync('error', 'Sin conexión · local');
+      });
   } else {
     document.getElementById('auth-content').innerHTML = `
       <span class="guest-msg">Modo lectura (no guarda cambios)</span>
